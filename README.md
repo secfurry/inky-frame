@@ -63,7 +63,7 @@ and can be removed, but will increase binary size slightly.
 Extra bonus points if you add:
 
 ```toml
-runner     = "probe-rs run --chip RP2040"
+runner    = "probe-rs run --chip RP2040"
 ```
 
 Under the `rustflags` option. This allows you to flash the firmware on the device
