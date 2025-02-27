@@ -1,0 +1,36 @@
+[package]
+name                = "inky-frame"
+readme              = "README.md"
+authors             = [ "secfurry" ]
+edition             = "2024"
+license             = "MIT"
+publish             = true
+version             = "0.1.0"
+keywords            = [ "pico", "picow", "embedded", "inkyframe", "pinorami", "inky_frame", "tga", "sdcard", "eink" ]
+categories          = [ "no-std", "embedded", "api-bindings", "multimedia::images" ]
+repository          = "https://github.com/secfurry/inky-frame"
+description         = "Driver and protocol library for InkyFrame devices with peripheral support."
+
+[lib]
+doc                 = true
+name                = "inky_frame"
+path                = "src/lib.rs"
+test                = false
+bench               = false
+doctest             = false
+edition             = "2024"
+crate-type          = [ "lib" ]
+
+[dependencies]
+rpsp                = { version = "0.1.2", default-features = false, features = [] }
+
+[features]
+default             = [ "rpsp/pico" ]
+debug               = [ "rpsp/debug" ]
+cyw                 = [ "rpsp/cyw", "rpsp/pico" ]
+
+[package.metadata.docs.rs]
+target              = [ "thumbv6m-none-eabi" ]
+features            = [ "debug", "rpsp/cyw", "rpsp/debug", "rpsp/pico" ]
+default-target      = "thumbv6m-none-eabi"
+no-default-features = true
