@@ -248,6 +248,7 @@ impl ColorMap {
     }
 }
 impl<R: Reader> TgaParser<'_, R> {
+    #[inline]
     pub fn new<'a>(reader: &'a mut R) -> Result<TgaParser<'a, R>, ImageError> {
         let h = Header::new(reader)?;
         let s = h.image_start();
