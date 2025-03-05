@@ -53,9 +53,13 @@ pub enum InkyError {
 }
 #[repr(u8)]
 pub enum InkyRotation {
+    /// Buttons on Top
     Rotate0   = 0u8,
+    /// Buttons on Left
     Rotate90  = 1u8,
+    /// Buttons on Bottom
     Rotate180 = 2u8,
+    /// Buttons on Right
     Rotate270 = 3u8,
 }
 
