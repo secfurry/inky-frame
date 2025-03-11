@@ -24,6 +24,7 @@ extern crate rpsp;
 
 use core::cmp;
 use core::convert::Into;
+use core::marker::Send;
 use core::option::Option::{self, None, Some};
 use core::result::Result::{self, Err, Ok};
 
@@ -289,6 +290,8 @@ impl Acknowledge for PcfRtc<'_> {
         self.alarm_clear_state().unwrap_or(false) | self.timer_clear_state().unwrap_or(false)
     }
 }
+
+unsafe impl Send for PcfRtc<'_> {}
 
 #[inline]
 fn encode(v: u8) -> u8 {

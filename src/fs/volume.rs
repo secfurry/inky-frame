@@ -28,7 +28,7 @@ use core::option::Option::{self, None, Some};
 use core::result::Result::{self, Err, Ok};
 
 use crate::fs::volume::helpers::{Blocks, Manager};
-use crate::fs::{Block, BlockCache, BlockDevice, BlockEntryIter, DeviceError, Storage, le_u16, le_u32};
+use crate::fs::{Block, BlockCache, BlockDevice, BlockEntryIter, Cache, DeviceError, Storage, le_u16, le_u32};
 
 mod file;
 mod helpers;
@@ -119,14 +119,18 @@ impl<'a, B: BlockDevice> Volume<'a, B> {
             return Ok(Directory::new(DirEntry::new_root(), self));
         }
         let mut x: DirectoryIndex<'_, B> = DirectoryIndex::new(self);
-        let mut b = Block::new();
-        self.find_dir(&mut x, &mut b, p, false)
+        {
+            let mut b = Cache::block_a();
+            self.find_dir(&mut x, &mut b, p, false)
+        }
     }
     #[inline]
     pub fn dir_create(&'a self, path: impl AsRef<str>) -> Result<Directory<'a, B>, DeviceError> {
         let mut x = DirectoryIndex::new(self);
-        let mut b: Block = Block::new();
-        self.find_dir(&mut x, &mut b, path.as_ref().as_bytes(), true)
+        {
+            let mut b = Cache::block_a();
+            self.find_dir(&mut x, &mut b, path.as_ref().as_bytes(), true)
+        }
     }
     #[inline]
     pub fn file_open(&'a self, path: impl AsRef<str>, mode: u8) -> Result<File<'a, B>, DeviceError> {
@@ -142,8 +146,10 @@ impl<'a, B: BlockDevice> Volume<'a, B> {
     #[inline]
     pub unsafe fn file_entry(&'a self, name: impl AsRef<str>, parent: Option<&DirEntry>, mode: u8) -> Result<File<'a, B>, DeviceError> {
         let mut x = DirectoryIndex::new(self);
-        let mut b = Block::new();
-        self.node_create_file(&mut x, &mut b, name.as_ref().as_bytes(), parent, mode)
+        {
+            let mut b = Cache::block_a();
+            self.node_create_file(&mut x, &mut b, name.as_ref().as_bytes(), parent, mode)
+        }
     }
     pub unsafe fn dir_entry(&'a self, name: impl AsRef<str>, parent: Option<&DirEntry>, create: bool) -> Result<Directory<'a, B>, DeviceError> {
         let p = parent.and_then(|v| v.cluster());
@@ -156,8 +162,10 @@ impl<'a, B: BlockDevice> Volume<'a, B> {
         if !create {
             return Err(DeviceError::NotFound);
         }
-        let mut b = Block::new();
-        Ok(Directory::new(self.node_create_dir(&mut b, n, p)?, self))
+        {
+            let mut b = Cache::block_a();
+            Ok(Directory::new(self.node_create_dir(&mut b, n, p)?, self))
+        }
     }
 
     fn open_inner(&'a self, path: &[u8], mode: u8) -> Result<File<'a, B>, DeviceError> {
@@ -168,25 +176,29 @@ impl<'a, B: BlockDevice> Volume<'a, B> {
             return Err(DeviceError::NotFound);
         }
         let mut x = DirectoryIndex::new(self);
-        let mut k = Block::new();
-        // Split file into dirs and path.
-        let i = match path.iter().rposition(|v| is_sep(*v)) {
-            Some(v) if v + 1 >= path.len() => return Err(DeviceError::NotAFile),
-            Some(v) => v,
-            None => return self.open_inner_file(&mut x, &mut k, path, mode),
-        };
-        let d = self.find_dir(&mut x, &mut k, &path[0..i], mode & Mode::CREATE != 0)?;
-        self.node_create_file(&mut x, &mut k, &path[i + 1..], Some(d.entry()), mode)
+        {
+            let mut k = Cache::block_a();
+            // Split file into dirs and path.
+            let i = match path.iter().rposition(|v| is_sep(*v)) {
+                Some(v) if v + 1 >= path.len() => return Err(DeviceError::NotAFile),
+                Some(v) => v,
+                None => return self.open_inner_file(&mut x, &mut k, path, mode),
+            };
+            let d = self.find_dir(&mut x, &mut k, &path[0..i], mode & Mode::CREATE != 0)?;
+            self.node_create_file(&mut x, &mut k, &path[i + 1..], Some(d.entry()), mode)
+        }
     }
     fn node_create_dir(&self, buf: &mut Block, name: &[u8], parent: Cluster) -> Result<DirEntry, DeviceError> {
         let e = self.node_create(buf, name, 0x10, parent, true)?;
         let i = self.man.block_pos(e.cluster());
         let s = DirEntry::new_self(&e, i);
         let p = DirEntry::new_parent(parent, i);
+        // Write Parent and Self entries
         s.write_entry(&self.man.ver, buf);
         p.write_entry(&self.man.ver, &mut buf[DIR_SIZE..]);
         self.dev.write_single(&buf, i)?;
         buf.clear();
+        // Write empty blocks to create initial Directory space.
         for k in (i + 1)..=i + self.man.blocks.blocks_per_cluster() {
             self.dev.write_single(&buf, k)?;
         }
@@ -305,10 +317,9 @@ impl<'a, B: BlockDevice> Volume<'a, B> {
                 if mode & Mode::APPEND != 0 {
                     f.seek_to_end();
                 } else if mode & Mode::TRUNCATE != 0 {
-                    let mut b = Block::new();
-                    self.man.cluster_truncate(self.dev, &mut b, f.cluster_abs())?;
+                    self.man.cluster_truncate(self.dev, buf, f.cluster_abs())?;
                     f.zero();
-                    f.sync(self.dev, &mut b, &self.man.ver)?;
+                    f.sync(self.dev, buf, &self.man.ver)?;
                 }
                 Ok(f)
             },

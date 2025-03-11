@@ -26,7 +26,7 @@ use core::clone::Clone;
 use core::convert::From;
 use core::fmt::{self, Debug, Formatter};
 use core::iter::{IntoIterator, Iterator};
-use core::marker::Copy;
+use core::marker::{Copy, PhantomData};
 use core::ops::Deref;
 use core::option::Option::{self, None, Some};
 use core::result::Result::{self, Err, Ok};
@@ -87,6 +87,7 @@ pub struct TgaParser<'a, R: Reader> {
     avail:  usize,
     reader: &'a mut R,
     header: Header,
+    _p:     PhantomData<*const ()>,
 }
 pub struct Compressed<'a, R: Reader> {
     cur:   u32,
@@ -261,6 +262,7 @@ impl<R: Reader> TgaParser<'_, R> {
             pos: 0usize,
             avail: 0usize,
             header: h,
+            _p: PhantomData,
         })
     }
 

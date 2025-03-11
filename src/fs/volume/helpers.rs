@@ -27,7 +27,7 @@ use core::option::Option::{None, Some};
 use core::result::Result::{self, Err, Ok};
 
 use crate::fs::volume::{bp_blocks_bytes, bp_blocks_reserved, bp_fat_entries, bp_fat_size, bp_fat32_info, bp_root_entries};
-use crate::fs::{Block, BlockCache, BlockDevice, Cluster, DIR_SIZE, DeviceError, FatVersion, Storage, le_u16, le_u32, to_le_u16, to_le_u32};
+use crate::fs::{Block, BlockCache, BlockDevice, Cache, Cluster, DIR_SIZE, DeviceError, FatVersion, Storage, le_u16, le_u32, to_le_u16, to_le_u32};
 
 pub enum ClusterValue {
     Empty,
@@ -374,7 +374,7 @@ fn new_16(b: &Block) -> Result<(FatVersion, u32, u32, Cluster, Cluster), DeviceE
     Ok((FatVersion::Fat16(le_u16(&b[0x11..])), f + r, r, None, None))
 }
 fn new_32(b: &Block, dev: &Storage<impl BlockDevice>, lba: u32) -> Result<(FatVersion, u32, u32, Cluster, Cluster), DeviceError> {
-    let (i, mut d) = (bp_fat32_info(&b) + lba, Block::new());
+    let (i, mut d) = (bp_fat32_info(&b) + lba, Cache::block_a());
     dev.read_single(&mut d, i)?;
     if le_u32(&d) != 0x41615252 || le_u32(&d[0x1E4..]) != 0x61417272 || le_u32(&d[0x1FC..]) != 0xAA550000 {
         return Err(DeviceError::InvalidFileSystem);

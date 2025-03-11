@@ -28,7 +28,7 @@ use core::ops::FnMut;
 use core::option::Option::{self, None, Some};
 use core::result::Result::{self, Err, Ok};
 
-use crate::fs::{Block, BlockCache, BlockDevice, Cluster, DIR_SIZE, DeviceError, DirEntry, DirEntryFull, Directory, Volume};
+use crate::fs::{Block, BlockCache, BlockDevice, BlockPtr, Cache, Cluster, DIR_SIZE, DeviceError, DirEntry, DirEntryFull, Directory, Volume};
 
 pub struct Range {
     sel:   [RangeIndex; 0xA],
@@ -44,7 +44,7 @@ pub struct RangeIndex(u32, u32, u32);
 pub struct DirectoryIndex<'a, B: BlockDevice> {
     vol:     &'a Volume<'a, B>,
     val:     DirEntryFull,
-    buf:     Block,
+    buf:     BlockPtr,
     cache:   BlockCache,
     entry:   u32,
     block:   u32,
@@ -133,12 +133,12 @@ impl RangeIndex {
     }
 }
 impl<'b, 'a: 'b, B: BlockDevice> DirectoryIndex<'a, B> {
-    #[inline]
+    #[inline(always)]
     pub(super) fn new(vol: &'a Volume<'a, B>) -> DirectoryIndex<'a, B> {
         DirectoryIndex {
             vol,
             val: DirEntryFull::new(),
-            buf: Block::new(),
+            buf: Cache::block_b(),
             cache: BlockCache::new(),
             entry: 0u32,
             block: 0u32,

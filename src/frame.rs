@@ -25,7 +25,8 @@ extern crate rpsp;
 use core::convert::{From, Into};
 use core::fmt::{self, Debug, Formatter};
 use core::iter::IntoIterator;
-use core::ops::FnOnce;
+use core::marker::{Send, Sized};
+use core::ops::{Deref, DerefMut, FnOnce};
 use core::option::Option::{self, None, Some};
 use core::result::Result::{self, Err, Ok};
 
@@ -49,6 +50,7 @@ const DEFAULT_CLEAR: u8 = 0x11u8;
 
 pub enum InkyError {
     Spi(SpiError),
+    NoMemory,
     InvalidBusyPins,
 }
 #[repr(u8)]
@@ -74,16 +76,37 @@ pub struct InkyPins {
     pub sr_clock: Option<PinID>,
     pub sr_latch: Option<PinID>,
 }
-pub struct Inky<'a, const B: usize, const W: u16, const H: u16> {
+#[repr(transparent)]
+pub struct Bytes<const N: usize>([u8; N]);
+pub struct Inky<'a, const B: usize, const W: u16, const H: u16, M: InkyMemory<B> = Bytes<B>> {
     dis: Display<'a, W, H>,
-    buf: [u8; B],
+    buf: M,
     rot: InkyRotation,
+}
+
+pub trait InkyMemory<const N: usize>: Sized + Deref<Target = [u8]> + DerefMut {
+    fn new() -> Option<Self>;
 }
 
 pub type Inky4<'a> = Inky<'a, 128_000, 640u16, 400u16>;
 pub type Inky5<'a> = Inky<'a, 134_400, 600u16, 448u16>;
 // NOTE(sf): ^This one might not not be correct, don't have the hardware to
 //           test!
+
+#[cfg(any(feature = "static", feature = "static_large"))]
+/// The static version uses the Static 'heaped' allocator, which removes the
+/// large stack allocation of this struct.
+///
+/// This can only be used when the "static" or "static_large" feature is
+/// enabled. It is recommended to only use "static" when using this struct as
+/// "static_large" wastes ~6k bytes for the larger buffer size, which is unused.
+pub type Inky4Static<'a> = Inky<'a, 128_000, 640u16, 400u16, heaped::Static<128_000>>;
+#[cfg(feature = "static_large")]
+/// The static version uses the Static 'heaped' allocator, which removes the
+/// large stack allocation of this struct.
+///
+/// This can only be used when the "static_large" feature is enabled.
+pub type Inky5Static<'a> = Inky<'a, 134_400, 600u16, 448u16, heaped::Static<134_400>>;
 
 impl InkyPins {
     #[inline(always)]
@@ -145,9 +168,9 @@ impl InkyPins {
         }
     }
 }
-impl<const B: usize, const W: u16, const H: u16> Inky<'_, B, W, H> {
+impl<const B: usize, const W: u16, const H: u16, M: InkyMemory<B>> Inky<'_, B, W, H, M> {
     #[inline]
-    pub fn create(p: &Pico, cfg: InkyPins) -> Result<Inky<B, W, H>, InkyError> {
+    pub fn create(p: &Pico, cfg: InkyPins) -> Result<Inky<B, W, H, M>, InkyError> {
         Ok(Inky {
             dis: Display::create(
                 p,
@@ -159,15 +182,15 @@ impl<const B: usize, const W: u16, const H: u16> Inky<'_, B, W, H> {
                 cfg.signal(p)?,
             )
             .map_err(InkyError::Spi)?,
-            buf: [DEFAULT_CLEAR; B],
+            buf: M::new().ok_or(InkyError::NoMemory)?,
             rot: InkyRotation::Rotate0,
         })
     }
     #[inline]
-    pub fn new<'a>(p: &Pico, spi: impl Into<SpiBus<'a>>, cfg: InkyPins) -> Result<Inky<'a, B, W, H>, InkyError> {
+    pub fn new<'a>(p: &Pico, spi: impl Into<SpiBus<'a>>, cfg: InkyPins) -> Result<Inky<'a, B, W, H, M>, InkyError> {
         Ok(Inky {
             dis: Display::new(p, spi.into(), cfg.cs, cfg.rst, cfg.data, cfg.signal(p)?),
-            buf: [DEFAULT_CLEAR; B],
+            buf: M::new().ok_or(InkyError::NoMemory)?,
             rot: InkyRotation::Rotate0,
         })
     }
@@ -241,7 +264,7 @@ impl<const B: usize, const W: u16, const H: u16> Inky<'_, B, W, H> {
         self.set_pixel_raw(x, y, c.uint());
     }
     #[inline(always)]
-    pub fn set_with<E>(&mut self, func: impl FnOnce(&mut Inky<'_, B, W, H>) -> Result<(), E>) -> Result<(), E> {
+    pub fn set_with<E>(&mut self, func: impl FnOnce(&mut Inky<'_, B, W, H, M>) -> Result<(), E>) -> Result<(), E> {
         func(self)
     }
     pub fn set_image<E>(&mut self, x: i32, y: i32, image: impl IntoIterator<Item = Result<Pixel, E>>) -> Result<(), E> {
@@ -299,6 +322,27 @@ impl<const B: usize, const W: u16, const H: u16> Inky<'_, B, W, H> {
     }
 }
 
+impl<const N: usize> Deref for Bytes<N> {
+    type Target = [u8];
+
+    #[inline(always)]
+    fn deref(&self) -> &[u8] {
+        &self.0
+    }
+}
+impl<const N: usize> DerefMut for Bytes<N> {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut [u8] {
+        &mut self.0
+    }
+}
+impl<const N: usize> InkyMemory<N> for Bytes<N> {
+    #[inline(always)]
+    fn new() -> Option<Bytes<N>> {
+        Some(Bytes([0u8; N]))
+    }
+}
+
 impl From<u8> for InkyRotation {
     #[inline(always)]
     fn from(v: u8) -> InkyRotation {
@@ -311,12 +355,15 @@ impl From<u8> for InkyRotation {
     }
 }
 
+unsafe impl<const B: usize, const W: u16, const H: u16, M: InkyMemory<B>> Send for Inky<'_, B, W, H, M> {}
+
 #[cfg(feature = "debug")]
 impl Debug for InkyError {
     #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             InkyError::Spi(v) => f.debug_tuple("Spi").field(v).finish(),
+            InkyError::NoMemory => f.write_str("NoMemory"),
             InkyError::InvalidBusyPins => f.write_str("InvalidBusyPins"),
         }
     }
@@ -327,4 +374,72 @@ impl Debug for InkyError {
     fn fmt(&self, _f: &mut Formatter<'_>) -> fmt::Result {
         Ok(())
     }
+}
+
+#[cfg(any(feature = "static", feature = "static_large"))]
+pub mod heaped {
+    extern crate core;
+    extern crate rpsp;
+
+    use core::cell::UnsafeCell;
+    use core::marker::Sync;
+    use core::mem::forget;
+    use core::ops::{Deref, DerefMut, Drop};
+    use core::option::Option;
+    use core::ptr::NonNull;
+    use core::slice::{from_raw_parts, from_raw_parts_mut};
+
+    use rpsp::locks::Spinlock27;
+
+    use crate::frame::InkyMemory;
+
+    static INSTANCE: Inner = Inner::new();
+
+    /// Push the allocation for the memory backend to a static memory instead of
+    /// the stack, which saves room for other things.
+    pub struct Static<const N: usize>(NonNull<u8>);
+
+    struct Inner(UnsafeCell<[u8; 0x1F400usize]>);
+
+    impl Inner {
+        const SIZE: usize = if cfg!(feature = "static_large") { 0x20D00usize } else { 0x1F400usize };
+
+        #[inline(always)]
+        const fn new() -> Inner {
+            Inner(UnsafeCell::new([0u8; Inner::SIZE]))
+        }
+    }
+
+    impl<const N: usize> Drop for Static<N> {
+        #[inline(always)]
+        fn drop(&mut self) {
+            unsafe { Spinlock27::free() }
+        }
+    }
+    impl<const N: usize> Deref for Static<N> {
+        type Target = [u8];
+
+        #[inline(always)]
+        fn deref(&self) -> &[u8] {
+            unsafe { from_raw_parts(self.0.as_ptr(), N) }
+        }
+    }
+    impl<const N: usize> DerefMut for Static<N> {
+        #[inline(always)]
+        fn deref_mut(&mut self) -> &mut [u8] {
+            unsafe { from_raw_parts_mut(self.0.as_ptr(), N) }
+        }
+    }
+    impl<const N: usize> InkyMemory<N> for Static<N> {
+        #[inline(always)]
+        fn new() -> Option<Static<N>> {
+            Spinlock27::try_claim().map(|v| {
+                let r = Static(unsafe { NonNull::new_unchecked(INSTANCE.0.get() as *mut u8) });
+                forget(v);
+                r
+            })
+        }
+    }
+
+    unsafe impl Sync for Inner {}
 }

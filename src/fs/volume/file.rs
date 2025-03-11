@@ -24,6 +24,8 @@ extern crate rpsp;
 
 use core::cmp::PartialEq;
 use core::convert::{AsRef, Into, TryInto};
+use core::marker::PhantomData;
+use core::mem::{drop, transmute};
 use core::ops::{Deref, Drop};
 use core::option::Option::{None, Some};
 use core::result::Result::{self, Err, Ok};
@@ -33,8 +35,8 @@ use rpsp::ignore_error;
 use rpsp::io::{Read, Seek, SeekFrom, Write};
 use rpsp::time::{Time, Weekday};
 
-use crate::fs::volume::LongNamePtr;
-use crate::fs::{Block, BlockCache, BlockDevice, Cluster, DIR_SIZE, DeviceError, DirectoryIndex, Error, FatVersion, LongName, ShortName, Storage, Volume, le_u16, le_u32, to_le_u16, to_le_u32};
+use crate::fs::state::{Safe, Unsafe};
+use crate::fs::{Block, BlockCache, BlockDevice, BlockPtr, Cache, Cluster, DIR_SIZE, DeviceError, DirectoryIndex, Error, FatVersion, LongName, LongNamePtr, ShortName, Storage, Volume, le_u16, le_u32, to_le_u16, to_le_u32};
 
 const FILE_MAX_SIZE: u32 = 0xFFFFFFFFu32;
 
@@ -56,18 +58,27 @@ pub struct DirEntryFull {
     sum:   u8,
     entry: DirEntry,
 }
-
-pub struct File<'a, B: BlockDevice> {
+pub struct Reader<'a, B: BlockDevice> {
+    f:   File<'a, B, Unsafe>,
+    bp:  u32,
+    buf: BlockPtr,
+}
+pub struct Directory<'a, B: BlockDevice> {
+    vol: &'a Volume<'a, B>,
+    dir: DirEntry,
+}
+pub struct File<'a, B: BlockDevice, S: FileSync = Safe> {
     vol:   &'a Volume<'a, B>,
     pos:   u32,
     file:  DirEntry,
     last:  u32,
     mode:  u8,
     short: u32,
+    _p:    PhantomData<*const S>,
 }
-pub struct Directory<'a, B: BlockDevice> {
-    vol: &'a Volume<'a, B>,
-    dir: DirEntry,
+
+pub trait FileSync {
+    fn cache() -> BlockPtr;
 }
 
 impl Mode {
@@ -327,7 +338,7 @@ impl DirEntryFull {
     #[inline]
     pub(super) fn new() -> DirEntryFull {
         DirEntryFull {
-            lfn:   LongNamePtr::new(),
+            lfn:   Cache::lfn(),
             sum:   0u8,
             entry: DirEntry::new(0, 0),
         }
@@ -388,8 +399,8 @@ impl DirEntryFull {
     }
 }
 impl<'a, B: BlockDevice> File<'a, B> {
-    #[inline]
-    pub(super) fn new(file: DirEntry, mode: u8, vol: &'a Volume<'a, B>) -> File<'a, B> {
+    #[inline(always)]
+    pub(super) fn new(file: DirEntry, mode: u8, vol: &'a Volume<'a, B>) -> File<'a, B, Safe> {
         File {
             last: file.cluster_abs(),
             vol,
@@ -397,170 +408,59 @@ impl<'a, B: BlockDevice> File<'a, B> {
             mode,
             pos: 0u32,
             short: 0u32,
+            _p: PhantomData,
         }
     }
-
+}
+impl<'a, B: BlockDevice> Reader<'a, B> {
     #[inline(always)]
     pub fn cursor(&self) -> usize {
-        self.pos as usize
-    }
-    #[inline(always)]
-    pub fn is_dirty(&self) -> bool {
-        self.mode & 0x80 != 0
+        self.f.pos as usize
     }
     #[inline(always)]
     pub fn available(&self) -> usize {
-        self.file.size.saturating_sub(self.pos) as usize
-    }
-    #[inline(always)]
-    pub fn is_readable(&self) -> bool {
-        self.mode >> 4 == 0 || self.mode & Mode::READ != 0
-    }
-    #[inline(always)]
-    pub fn is_writeable(&self) -> bool {
-        self.mode & Mode::WRITE != 0
-    }
-    #[inline(always)]
-    pub fn is_allocated(&self) -> bool {
-        self.file.cluster.is_some_and(|v| v > 2)
+        self.f.file.size.saturating_sub(self.f.pos) as usize
     }
     #[inline(always)]
     pub fn volume(&self) -> &Volume<'a, B> {
-        self.vol
-    }
-    #[inline]
-    pub fn delete(self) -> Result<(), DeviceError> {
-        let mut b = Block::new();
-        self.file.delete(self.vol, &mut b)
+        self.f.vol
     }
     #[inline(always)]
-    pub fn close(mut self) -> Result<(), DeviceError> {
-        self.flush()
+    pub fn into_file(self) -> File<'a, B, Unsafe> {
+        drop(self.buf);
+        self.f
     }
-    #[inline]
-    pub fn flush(&mut self) -> Result<(), DeviceError> {
-        if !self.is_dirty() {
-            return Ok(());
-        }
-        let mut b = Block::new();
-        self.vol.man.sync(self.vol.dev, &mut b)?;
-        self.file.sync(self.vol.dev, &mut b, &self.vol.man.ver)
-    }
-    pub fn write(&mut self, b: &[u8]) -> Result<usize, DeviceError> {
-        if !self.is_writeable() {
-            return Err(DeviceError::NotWritable);
-        }
-        if b.is_empty() {
-            return Ok(0);
-        }
-        self.mode |= 0x80;
-        let mut d = Block::new();
-        if !self.is_allocated() {
-            self.file.cluster = Some(self.vol.man.cluster_allocate(self.vol.dev, &mut d, None, false)?);
-            d.clear();
-        }
-        let c = self.file.cluster.ok_or(DeviceError::WriteError)?;
-        if self.last < c {
-            self.last = c;
-            self.short = 0;
-        }
-        let t = cmp::min(b.len(), (FILE_MAX_SIZE - self.pos) as usize);
-        let (mut c, mut p) = (BlockCache::new(), 0);
-        while p < t {
-            let (i, o, a) = match self.data(&mut d, &mut c) {
-                Ok(v) => v,
-                Err(DeviceError::EndOfFile) => {
-                    self.vol
-                        .man
-                        .cluster_allocate(self.vol.dev, &mut d, self.cluster(), false)
-                        .map_err(|_| DeviceError::NoSpace)?;
-                    self.data(&mut d, &mut c).map_err(|_| DeviceError::WriteError)?
-                },
-                Err(e) => return Err(e),
-            };
-            let n = cmp::min(a, t - p);
-            if n == 0 {
-                break;
-            }
-            if o != 0 {
-                self.vol.dev.read_single(&mut d, i)?;
-            }
-            d[o..o + n].copy_from_slice(&b[p..p + n]);
-            self.vol.dev.write_single(&d, i)?;
-            self.file.size = self.file.size.saturating_add(n as u32);
-            self.pos = self.pos.saturating_add(n as u32);
-            p += n;
-        }
-        self.file.attrs |= 0x20;
-        Ok(p)
-    }
-    /// Does not save the file and keeps the current Cluster intact.
-    /// To fully truncate a File entry, it must be opened with 'Mode::TRUNCATE'.
-    pub fn truncate(&mut self, pos: usize) -> Result<(), DeviceError> {
-        let i = pos.try_into().map_err(|_| DeviceError::Overflow)?;
-        if i > self.file.size {
-            return Err(DeviceError::InvalidIndex);
-        }
-        self.file.size = i;
-        if self.file.size > self.pos {
-            self.pos = i;
-        }
-        Ok(())
-    }
+    /// Similar to 'File.read' but does NOT re-read nearby chunks inside the
+    /// same Block.
+    ///
+    /// This will hold the Cache lock until dropped.
     pub fn read(&mut self, b: &mut [u8]) -> Result<usize, DeviceError> {
-        if !self.is_readable() {
-            return Err(DeviceError::NotReadable);
-        }
         if b.is_empty() {
             return Ok(0);
         }
         let (mut p, t) = (0, b.len());
-        let (mut d, mut c) = (Block::new(), BlockCache::new());
-        while p < t && self.pos < self.file.size {
-            let (i, o, a) = match self.data(&mut d, &mut c) {
+        let (d, mut c) = (&mut *self.buf, BlockCache::new());
+        while p < t && self.f.pos < self.f.file.size {
+            let (i, o, a) = match self.f.data(d, &mut c) {
                 Err(DeviceError::EndOfFile) => return Ok(p),
                 Err(e) => return Err(e),
                 Ok(v) => v,
             };
-            self.vol.dev.read_single(&mut d, i)?;
-            let n = cmp::min(cmp::min(a, t - p), self.available());
+            if self.bp == 0 || self.bp != i {
+                // Only read if the block changed, to prevent double reads.
+                // Speedup is 200%!
+                self.f.vol.dev.read_single(d, i)?;
+                self.bp = i;
+            }
+            let n = cmp::min(cmp::min(a, t - p), self.f.available());
             if n == 0 {
                 break;
             }
             b[p..p + n].copy_from_slice(&d[o..o + n]);
-            self.pos = self.pos.saturating_add(n as u32);
-            p += n;
+            self.f.pos = self.f.pos.saturating_add(n as u32);
+            p = p.saturating_add(n);
         }
         Ok(p)
-    }
-
-    #[inline(always)]
-    pub(super) fn zero(&mut self) {
-        self.file.size = 0
-    }
-    #[inline(always)]
-    pub(super) fn seek_to_end(&mut self) {
-        self.pos = self.file.size
-    }
-
-    fn data(&mut self, scratch: &mut Block, cache: &mut BlockCache) -> Result<(u32, usize, usize), DeviceError> {
-        if self.pos < self.short {
-            (self.short, self.last) = (0, self.cluster_abs());
-        }
-        let c = self.vol.man.blocks.bytes_per_cluster();
-        let n = self.pos.saturating_sub(self.short);
-        cache.clear();
-        for _ in 0..(n / c) {
-            self.last = self
-                .vol
-                .man
-                .cluster_next(self.vol.dev, scratch, cache, self.last)?
-                .ok_or_else(|| DeviceError::EndOfFile)?;
-            self.short += c;
-        }
-        let i = self.vol.man.block_pos_at(self.last) + (self.pos.saturating_sub(self.short) / Block::SIZE as u32);
-        let o = self.pos as usize % Block::SIZE;
-        Ok((i, o, Block::SIZE - o))
     }
 }
 impl<'a, B: BlockDevice> Directory<'a, B> {
@@ -575,7 +475,7 @@ impl<'a, B: BlockDevice> Directory<'a, B> {
     }
     #[inline]
     pub fn delete(self, force: bool) -> Result<(), DeviceError> {
-        let mut b = Block::new();
+        let mut b = Cache::block_a();
         Directory::delete_inner(self.vol, &self.dir, &mut b, force)
     }
     #[inline(always)]
@@ -628,14 +528,206 @@ impl<'a, B: BlockDevice> Directory<'a, B> {
         vol.man.cluster_truncate(vol.dev, scratch, dir.cluster_abs())
     }
 }
+impl<'a, B: BlockDevice> File<'a, B, Safe> {
+    #[inline(always)]
+    /// Remove the locking requirement for file Read/Writes.
+    ///
+    /// Use only if sure that reads/writes will not happen on the same or
+    /// multiple files by different cores at the same.
+    pub unsafe fn into_unsafe(self) -> File<'a, B, Unsafe> {
+        unsafe { transmute(self) }
+    }
+    #[inline(always)]
+    /// Transform the File into a high-speed Reader with better caching
+    /// and locking mechanisms.
+    pub unsafe fn into_reader(self) -> Result<Reader<'a, B>, DeviceError> {
+        if !self.is_readable() {
+            return Err(DeviceError::NotReadable);
+        }
+        Ok(Reader {
+            f:   unsafe { self.into_unsafe() },
+            bp:  0u32,
+            buf: Cache::block_a(),
+        })
+    }
+}
+impl<'a, B: BlockDevice> File<'a, B, Unsafe> {
+    #[inline(always)]
+    pub fn into_safe(self) -> File<'a, B, Safe> {
+        unsafe { transmute(self) }
+    }
+}
+impl<'a, B: BlockDevice, S: FileSync> File<'a, B, S> {
+    #[inline(always)]
+    pub fn cursor(&self) -> usize {
+        self.pos as usize
+    }
+    #[inline(always)]
+    pub fn is_dirty(&self) -> bool {
+        self.mode & 0x80 != 0
+    }
+    #[inline(always)]
+    pub fn available(&self) -> usize {
+        self.file.size.saturating_sub(self.pos) as usize
+    }
+    #[inline(always)]
+    pub fn is_readable(&self) -> bool {
+        self.mode >> 4 == 0 || self.mode & Mode::READ != 0
+    }
+    #[inline(always)]
+    pub fn is_writeable(&self) -> bool {
+        self.mode & Mode::WRITE != 0
+    }
+    #[inline(always)]
+    pub fn is_allocated(&self) -> bool {
+        self.file.cluster.is_some_and(|v| v > 2)
+    }
+    #[inline(always)]
+    pub fn volume(&self) -> &Volume<'a, B> {
+        self.vol
+    }
+    #[inline]
+    pub fn delete(self) -> Result<(), DeviceError> {
+        let mut b = S::cache();
+        self.file.delete(self.vol, &mut b)
+    }
+    #[inline(always)]
+    pub fn close(mut self) -> Result<(), DeviceError> {
+        self.flush()
+    }
+    #[inline]
+    pub fn flush(&mut self) -> Result<(), DeviceError> {
+        if !self.is_dirty() {
+            return Ok(());
+        }
+        let mut b = S::cache();
+        self.vol.man.sync(self.vol.dev, &mut b)?;
+        self.file.sync(self.vol.dev, &mut b, &self.vol.man.ver)
+    }
+    pub fn write(&mut self, b: &[u8]) -> Result<usize, DeviceError> {
+        if !self.is_writeable() {
+            return Err(DeviceError::NotWritable);
+        }
+        if b.is_empty() {
+            return Ok(0);
+        }
+        self.mode |= 0x80;
+        let mut d = S::cache();
+        if !self.is_allocated() {
+            self.file.cluster = Some(self.vol.man.cluster_allocate(self.vol.dev, &mut d, None, false)?);
+            d.clear();
+        }
+        let c = self.file.cluster.ok_or(DeviceError::WriteError)?;
+        if self.last < c {
+            (self.last, self.short) = (c, 0);
+        }
+        let t = cmp::min(b.len(), (FILE_MAX_SIZE - self.pos) as usize);
+        let (mut c, mut p) = (BlockCache::new(), 0);
+        while p < t {
+            let (i, o, a) = match self.data(&mut d, &mut c) {
+                Ok(v) => v,
+                Err(DeviceError::EndOfFile) => {
+                    self.vol
+                        .man
+                        .cluster_allocate(self.vol.dev, &mut d, self.cluster(), false)
+                        .map_err(|_| DeviceError::NoSpace)?;
+                    self.data(&mut d, &mut c).map_err(|_| DeviceError::WriteError)?
+                },
+                Err(e) => return Err(e),
+            };
+            let n = cmp::min(a, t.saturating_sub(p));
+            if n == 0 {
+                break;
+            }
+            if o != 0 {
+                self.vol.dev.read_single(&mut d, i)?;
+            }
+            d[o..o + n].copy_from_slice(&b[p..p + n]);
+            self.vol.dev.write_single(&d, i)?;
+            self.file.size = self.file.size.saturating_add(n as u32);
+            self.pos = self.pos.saturating_add(n as u32);
+            p = p.saturating_add(n);
+        }
+        self.file.attrs |= 0x20;
+        Ok(p)
+    }
+    /// Does not save the file and keeps the current Cluster intact.
+    /// To fully truncate a File entry, it must be opened with 'Mode::TRUNCATE'.
+    pub fn truncate(&mut self, pos: usize) -> Result<(), DeviceError> {
+        let i = pos.try_into().map_err(|_| DeviceError::Overflow)?;
+        if i > self.file.size {
+            return Err(DeviceError::InvalidIndex);
+        }
+        self.file.size = i;
+        if self.file.size > self.pos {
+            self.pos = i;
+        }
+        Ok(())
+    }
+    pub fn read(&mut self, b: &mut [u8]) -> Result<usize, DeviceError> {
+        if !self.is_readable() {
+            return Err(DeviceError::NotReadable);
+        }
+        if b.is_empty() {
+            return Ok(0);
+        }
+        let (mut p, t) = (0, b.len());
+        let (mut d, mut c) = (S::cache(), BlockCache::new());
+        while p < t && self.pos < self.file.size {
+            let (i, o, a) = match self.data(&mut d, &mut c) {
+                Err(DeviceError::EndOfFile) => return Ok(p),
+                Err(e) => return Err(e),
+                Ok(v) => v,
+            };
+            self.vol.dev.read_single(&mut d, i)?;
+            let n = cmp::min(cmp::min(a, t - p), self.available());
+            if n == 0 {
+                break;
+            }
+            b[p..p + n].copy_from_slice(&d[o..o + n]);
+            self.pos = self.pos.saturating_add(n as u32);
+            p = p.saturating_add(n);
+        }
+        Ok(p)
+    }
 
-impl<B: BlockDevice> Drop for File<'_, B> {
+    #[inline(always)]
+    pub(super) fn zero(&mut self) {
+        self.file.size = 0
+    }
+    #[inline(always)]
+    pub(super) fn seek_to_end(&mut self) {
+        self.pos = self.file.size
+    }
+
+    fn data(&mut self, scratch: &mut Block, cache: &mut BlockCache) -> Result<(u32, usize, usize), DeviceError> {
+        if self.pos < self.short {
+            (self.short, self.last) = (0, self.cluster_abs());
+        }
+        let c = self.vol.man.blocks.bytes_per_cluster();
+        let n = self.pos.saturating_sub(self.short);
+        cache.clear();
+        for _ in 0..(n / c) {
+            self.last = self
+                .vol
+                .man
+                .cluster_next(self.vol.dev, scratch, cache, self.last)?
+                .ok_or_else(|| DeviceError::EndOfFile)?;
+            self.short += c;
+        }
+        let i = self.vol.man.block_pos_at(self.last) + (self.pos.saturating_sub(self.short) / Block::SIZE as u32);
+        let o = self.pos as usize % Block::SIZE;
+        Ok((i, o, Block::SIZE - o))
+    }
+}
+
+impl<B: BlockDevice, S: FileSync> Drop for File<'_, B, S> {
     #[inline(always)]
     fn drop(&mut self) {
         ignore_error!(self.flush());
     }
 }
-impl<B: BlockDevice> Deref for File<'_, B> {
+impl<B: BlockDevice, S: FileSync> Deref for File<'_, B, S> {
     type Target = DirEntry;
 
     #[inline(always)]
@@ -643,7 +735,7 @@ impl<B: BlockDevice> Deref for File<'_, B> {
         &self.file
     }
 }
-impl<B: BlockDevice> Seek<DeviceError> for File<'_, B> {
+impl<B: BlockDevice, S: FileSync> Seek<DeviceError> for File<'_, B, S> {
     fn seek(&mut self, s: SeekFrom) -> Result<u64, Error> {
         let r = match s {
             SeekFrom::End(v) => {
@@ -666,13 +758,13 @@ impl<B: BlockDevice> Seek<DeviceError> for File<'_, B> {
         Ok(self.pos as u64)
     }
 }
-impl<B: BlockDevice> Read<DeviceError> for File<'_, B> {
+impl<B: BlockDevice, S: FileSync> Read<DeviceError> for File<'_, B, S> {
     #[inline(always)]
     fn read(&mut self, b: &mut [u8]) -> Result<usize, Error> {
         Ok(self.read(b)?)
     }
 }
-impl<B: BlockDevice> Write<DeviceError> for File<'_, B> {
+impl<B: BlockDevice, S: FileSync> Write<DeviceError> for File<'_, B, S> {
     #[inline(always)]
     fn flush(&mut self) -> Result<(), Error> {
         Ok(self.flush()?)
@@ -680,6 +772,26 @@ impl<B: BlockDevice> Write<DeviceError> for File<'_, B> {
     #[inline(always)]
     fn write(&mut self, b: &[u8]) -> Result<usize, Error> {
         Ok(self.write(b)?)
+    }
+}
+
+impl<B: BlockDevice> Deref for Reader<'_, B> {
+    type Target = DirEntry;
+
+    #[inline(always)]
+    fn deref(&self) -> &DirEntry {
+        &self.f.file
+    }
+}
+impl<B: BlockDevice> Seek<DeviceError> for Reader<'_, B> {
+    fn seek(&mut self, s: SeekFrom) -> Result<u64, Error> {
+        self.f.seek(s)
+    }
+}
+impl<B: BlockDevice> Read<DeviceError> for Reader<'_, B> {
+    #[inline(always)]
+    fn read(&mut self, b: &mut [u8]) -> Result<usize, Error> {
+        Ok(self.read(b)?)
     }
 }
 
@@ -717,6 +829,19 @@ impl PartialEq<[u8]> for DirEntryFull {
     }
 }
 
+impl FileSync for Safe {
+    #[inline(always)]
+    fn cache() -> BlockPtr {
+        Cache::block_a()
+    }
+}
+impl FileSync for Unsafe {
+    #[inline(always)]
+    fn cache() -> BlockPtr {
+        unsafe { Cache::block_a_nolock() }
+    }
+}
+
 impl<B: BlockDevice> Deref for Directory<'_, B> {
     type Target = DirEntry;
 
@@ -748,4 +873,9 @@ fn time_write(t: &Time, b: &mut [u8]) {
         (((t.year.saturating_sub(0x7B2)).saturating_sub(10) << 9) & 0xFE00) | (((t.month as u16 + 1) << 5) & 0x1E0) | ((t.day as u16 + 1) & 0x1F),
         &mut b[2..],
     )
+}
+
+pub mod state {
+    pub struct Safe;
+    pub struct Unsafe;
 }

@@ -39,15 +39,17 @@ pub struct BlockEntryIter {
     last:  u32,
     count: u8,
 }
+#[repr(transparent)]
 pub struct BlockCache(Option<u32>);
+#[repr(transparent)]
 pub struct Block([u8; Block::SIZE]);
 
 impl Block {
     pub const SIZE: usize = 0x200;
 
-    #[inline]
-    pub fn new() -> Block {
-        Block([0u8; 0x200])
+    #[inline(always)]
+    pub const fn new() -> Block {
+        Block([0u8; Block::SIZE])
     }
 
     #[inline(always)]

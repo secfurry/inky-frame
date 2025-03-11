@@ -5,7 +5,7 @@ authors             = [ "secfurry" ]
 edition             = "2024"
 license             = "MIT"
 publish             = true
-version             = "0.1.0"
+version             = "0.2.0"
 keywords            = [ "picow", "embedded", "inkyframe", "pinorami", "sdcard" ]
 categories          = [ "no-std", "embedded", "api-bindings", "multimedia::images" ]
 repository          = "https://github.com/secfurry/inky-frame"
@@ -22,15 +22,20 @@ edition             = "2024"
 crate-type          = [ "lib" ]
 
 [dependencies]
-rpsp                = { version = "0.1.2", default-features = false, features = [] }
+## Local Development Only
+# rpsp                = { path = "../rpsp", default-features = false, features = [] }
+#
+rpsp                = { version = "0.1.4", default-features = false, features = [] }
 
 [features]
 default             = [ "rpsp/pico" ]
 debug               = [ "rpsp/debug" ]
 cyw                 = [ "rpsp/cyw", "rpsp/pico" ]
+static              = []
+static_large        = []
 
 [package.metadata.docs.rs]
 target              = [ "thumbv6m-none-eabi" ]
-features            = [ "debug", "rpsp/cyw", "rpsp/debug", "rpsp/pico" ]
+features            = [ "debug", "static", "static_large", "rpsp/cyw", "rpsp/debug", "rpsp/pico" ]
 default-target      = "thumbv6m-none-eabi"
 no-default-features = true

@@ -20,50 +20,24 @@
 #![no_implicit_prelude]
 
 extern crate core;
-extern crate rpsp;
 
-use core::cell::UnsafeCell;
 use core::clone::Clone;
 use core::cmp::{self, PartialEq};
 use core::convert::AsRef;
 use core::default::Default;
 use core::iter::Iterator;
-use core::marker::Sync;
-use core::mem::forget;
-use core::ops::{Deref, DerefMut, Drop};
+use core::ops::Deref;
 use core::option::Option::{None, Some};
-use core::ptr::NonNull;
 use core::result::Result::{self, Err, Ok};
 use core::str::from_utf8_unchecked;
 use core::unreachable;
 
-use rpsp::locks::Spinlock30;
-
 use crate::fs::{DeviceError, FatVersion};
-
-// Shared References are annoying, but this is the best way to handle this as
-// the Pico does not like this struct when it's 255 bytes in size, so we'll
-// just share it and pray there's never any concurrent access lol.
-//
-// Actually, we'll use Spinlock30 to sync this. So well 'own' the Spinlock when
-// we do 'LongNamePtr::new' and release it when the 'LongNamePtr' object is
-// dropped.
-static CACHE: Cache = Cache::new();
 
 pub struct LongName(pub(super) [u8; LongName::SIZE]);
 pub struct ShortName(pub(super) [u8; ShortName::SIZE]);
 pub struct VolumeName(pub(super) [u8; VolumeName::SIZE]);
 
-pub(super) struct LongNamePtr(NonNull<LongName>);
-
-struct Cache(UnsafeCell<LongName>);
-
-impl Cache {
-    #[inline(always)]
-    const fn new() -> Cache {
-        Cache(UnsafeCell::new(LongName::empty()))
-    }
-}
 impl LongName {
     pub const SIZE: usize = 0xFFusize;
 
@@ -397,16 +371,6 @@ impl VolumeName {
         &self.0
     }
 }
-impl LongNamePtr {
-    #[inline(always)]
-    pub(super) fn new() -> LongNamePtr {
-        let c = Spinlock30::claim();
-        // Claim and 'forget' the lock.
-        forget(c);
-        // Now nobody else can create this struct until we drop it.
-        LongNamePtr(unsafe { NonNull::new_unchecked(CACHE.0.get()) })
-    }
-}
 
 impl PartialEq for ShortName {
     #[inline(always)]
@@ -510,29 +474,6 @@ impl AsRef<str> for VolumeName {
         self.as_str()
     }
 }
-
-impl Drop for LongNamePtr {
-    #[inline(always)]
-    fn drop(&mut self) {
-        unsafe { Spinlock30::free() }
-    }
-}
-impl Deref for LongNamePtr {
-    type Target = LongName;
-
-    #[inline(always)]
-    fn deref(&self) -> &LongName {
-        unsafe { self.0.as_ref() }
-    }
-}
-impl DerefMut for LongNamePtr {
-    #[inline(always)]
-    fn deref_mut(&mut self) -> &mut LongName {
-        unsafe { &mut *self.0.as_ptr() }
-    }
-}
-
-unsafe impl Sync for Cache {}
 
 #[cfg(feature = "debug")]
 mod display {
