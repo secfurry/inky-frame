@@ -399,7 +399,7 @@ pub mod heaped {
     /// the stack, which saves room for other things.
     pub struct Static<const N: usize>(NonNull<u8>);
 
-    struct Inner(UnsafeCell<[u8; 0x1F400usize]>);
+    struct Inner(UnsafeCell<[u8; Inner::SIZE]>);
 
     impl Inner {
         const SIZE: usize = if cfg!(feature = "static_large") { 0x20D00usize } else { 0x1F400usize };
