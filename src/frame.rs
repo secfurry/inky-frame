@@ -347,7 +347,7 @@ impl From<u8> for InkyRotation {
     #[inline(always)]
     fn from(v: u8) -> InkyRotation {
         match v {
-            1 => InkyRotation::Rotate90
+            1 => InkyRotation::Rotate90,
             2 => InkyRotation::Rotate180,
             3 => InkyRotation::Rotate270,
             _ => InkyRotation::Rotate0,
