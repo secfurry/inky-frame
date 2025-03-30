@@ -38,7 +38,7 @@ use rpsp::pin::gpio::Output;
 use rpsp::pin::{Pin, PinID};
 use rpsp::spi::{Spi, SpiConfig, SpiDev, SpiFormat, SpiPhase, SpiPolarity};
 use rpsp::time::Time;
-use rpsp::{Pico, ignore_error, static_instance};
+use rpsp::{Board, ignore_error, static_instance};
 
 use crate::frame::ShiftRegister;
 use crate::fs::Storage;
@@ -51,14 +51,14 @@ pub use rpsp::{pin, pwm, sleep, sleep_us, ticks, ticks_ms};
 
 const PFC_RTC_HZ: u32 = 400_000u32;
 
-static_instance!(INSTANCE, MaybeUninit<Board>, Board::new());
+static_instance!(INSTANCE, MaybeUninit<Inner>, Inner::new());
 
 pub struct InkyBoard<'a> {
-    i: NonNull<Board<'a>>,
-    p: Pico,
+    i: NonNull<Inner<'a>>,
+    p: Board,
 }
 
-struct Board<'a> {
+struct Inner<'a> {
     rtc:     PcfRtc<'a>,
     spi:     Option<Spi>,
     pwr:     Pin<Output>,
@@ -67,9 +67,9 @@ struct Board<'a> {
     buttons: Buttons,
 }
 
-impl<'a> Board<'a> {
+impl<'a> Inner<'a> {
     #[inline(always)]
-    const fn new() -> MaybeUninit<Board<'a>> {
+    const fn new() -> MaybeUninit<Inner<'a>> {
         MaybeUninit::zeroed()
     }
 
@@ -78,7 +78,7 @@ impl<'a> Board<'a> {
         PinID::Pin0.ne(self.pwr.id())
     }
     #[inline]
-    fn setup(&mut self, p: &Pico) {
+    fn setup(&mut self, p: &Board) {
         // NOTE(sf): Ensure that VSYS_HOLD is enabled so we stay on during boot.
         self.pwr = Pin::get(&p, PinID::Pin2).output_high();
         self.spi = None;
@@ -100,7 +100,7 @@ impl<'a> Board<'a> {
 impl<'a> InkyBoard<'a> {
     #[inline]
     pub fn get() -> InkyBoard<'a> {
-        let p = Pico::get();
+        let p = Board::get();
         InkyBoard {
             i: with(|x| {
                 // Workaround for the compiler identifying that the I2C Rtc cannot be
@@ -235,21 +235,21 @@ impl<'a> InkyBoard<'a> {
     }
 
     #[inline(always)]
-    fn ptr(&self) -> &mut Board {
+    fn ptr(&self) -> &mut Inner {
         unsafe { &mut *self.i.as_ptr() }
     }
 }
 
 impl Deref for InkyBoard<'_> {
-    type Target = Pico;
+    type Target = Board;
 
     #[inline(always)]
-    fn deref(&self) -> &Pico {
+    fn deref(&self) -> &Board {
         &self.p
     }
 }
 
-unsafe impl Send for Board<'_> {}
+unsafe impl Send for Inner<'_> {}
 
 #[inline]
 pub fn leds() -> LedsPtr {

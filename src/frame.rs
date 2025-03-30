@@ -30,7 +30,7 @@ use core::ops::{Deref, DerefMut, FnOnce};
 use core::option::Option::{self, None, Some};
 use core::result::Result::{self, Err, Ok};
 
-use rpsp::Pico;
+use rpsp::Board;
 use rpsp::pin::{Pin, PinID};
 use rpsp::spi::{Spi, SpiBus, SpiError};
 
@@ -158,7 +158,7 @@ impl InkyPins {
     }
 
     #[inline]
-    fn signal(self, p: &Pico) -> Result<BusySignal, InkyError> {
+    fn signal(self, p: &Board) -> Result<BusySignal, InkyError> {
         if let Some(v) = self.busy_pin {
             return Ok(BusySignal::Pin(Pin::get(p, v).into_input()));
         }
@@ -170,7 +170,7 @@ impl InkyPins {
 }
 impl<const B: usize, const W: u16, const H: u16, M: InkyMemory<B>> Inky<'_, B, W, H, M> {
     #[inline]
-    pub fn create(p: &Pico, cfg: InkyPins) -> Result<Inky<B, W, H, M>, InkyError> {
+    pub fn create(p: &Board, cfg: InkyPins) -> Result<Inky<B, W, H, M>, InkyError> {
         Ok(Inky {
             dis: Display::create(
                 p,
@@ -187,7 +187,7 @@ impl<const B: usize, const W: u16, const H: u16, M: InkyMemory<B>> Inky<'_, B, W
         })
     }
     #[inline]
-    pub fn new<'a>(p: &Pico, spi: impl Into<SpiBus<'a>>, cfg: InkyPins) -> Result<Inky<'a, B, W, H, M>, InkyError> {
+    pub fn new<'a>(p: &Board, spi: impl Into<SpiBus<'a>>, cfg: InkyPins) -> Result<Inky<'a, B, W, H, M>, InkyError> {
         Ok(Inky {
             dis: Display::new(p, spi.into(), cfg.cs, cfg.rst, cfg.data, cfg.signal(p)?),
             buf: M::new().ok_or(InkyError::NoMemory)?,

@@ -25,7 +25,7 @@ extern crate rpsp;
 use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 
-use rpsp::Pico;
+use rpsp::Board;
 use rpsp::pin::PinID;
 use rpsp::pin::led::LedPwm;
 
@@ -71,7 +71,7 @@ impl Leds {
     }
 
     #[inline]
-    pub(crate) fn new(p: &Pico) -> Leds {
+    pub(crate) fn new(p: &Board) -> Leds {
         Leds {
             a:        LedPwm::get(p, PinID::Pin11),
             b:        LedPwm::get(p, PinID::Pin12),

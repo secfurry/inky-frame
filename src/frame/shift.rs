@@ -25,7 +25,7 @@ extern crate rpsp;
 use core::clone::Clone;
 use core::convert::From;
 
-use rpsp::Pico;
+use rpsp::Board;
 use rpsp::clock::Timer;
 use rpsp::pin::gpio::{Input, Output};
 use rpsp::pin::{Pin, PinID};
@@ -41,7 +41,7 @@ pub struct ShiftRegister {
 
 impl ShiftRegister {
     #[inline]
-    pub fn new(p: &Pico, clock: PinID, lat: PinID, data: PinID) -> ShiftRegister {
+    pub fn new(p: &Board, clock: PinID, lat: PinID, data: PinID) -> ShiftRegister {
         ShiftRegister {
             lat:   p.pin(lat).output_high(),
             clock: p.pin(clock).output_high(),

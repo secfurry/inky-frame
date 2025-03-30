@@ -47,11 +47,11 @@ pub enum DeviceError {
     NotADirectory,
     NonEmptyDirectory,
 
-    // Hardware-ish Errors
+    // Hardware-ish/Io Errors
+    Read,
+    Write,
     BadData,
     NoSpace,
-    ReadError,
-    WriteError,
     Hardware(u8),
 
     // Validation Errors
@@ -156,10 +156,10 @@ impl From<DeviceError> for Error {
     #[inline]
     fn from(v: DeviceError) -> Error {
         match v {
+            DeviceError::Read => Error::Read,
+            DeviceError::Write => Error::Write,
             DeviceError::Timeout => Error::Timeout,
             DeviceError::EndOfFile => Error::EndOfFile,
-            DeviceError::ReadError => Error::ReadError,
-            DeviceError::WriteError => Error::WriteError,
             DeviceError::UnexpectedEoF => Error::UnexpectedEof,
             DeviceError::NoSpace => Error::NoSpace,
             DeviceError::NotAFile => Error::NotAFile,
@@ -181,6 +181,8 @@ impl Debug for DeviceError {
     #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
+            DeviceError::Read => f.write_str("Read"),
+            DeviceError::Write => f.write_str("Write"),
             DeviceError::Timeout => f.write_str("Timeout"),
             DeviceError::NotAFile => f.write_str("NotAFile"),
             DeviceError::NotFound => f.write_str("NotFound"),
@@ -192,8 +194,6 @@ impl Debug for DeviceError {
             DeviceError::NonEmptyDirectory => f.write_str("NonEmptyDirectory"),
             DeviceError::BadData => f.write_str("BadData"),
             DeviceError::NoSpace => f.write_str("NoSpace"),
-            DeviceError::ReadError => f.write_str("ReadError"),
-            DeviceError::WriteError => f.write_str("WriteError"),
             DeviceError::Hardware(v) => f.debug_tuple("Hardware").field(v).finish(),
             DeviceError::Overflow => f.write_str("Overflow"),
             DeviceError::InvalidIndex => f.write_str("InvalidIndex"),

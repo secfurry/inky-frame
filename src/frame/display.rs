@@ -27,7 +27,7 @@ use core::convert::{Into, TryInto};
 use core::option::Option::{self, None, Some};
 use core::result::Result::{self, Ok};
 
-use rpsp::Pico;
+use rpsp::Board;
 use rpsp::clock::Timer;
 use rpsp::pin::gpio::{Input, Output};
 use rpsp::pin::{Pin, PinID};
@@ -63,7 +63,7 @@ impl BusySignal {
 }
 impl<const W: u16, const H: u16> Display<'_, W, H> {
     #[inline]
-    pub fn new<'a>(p: &Pico, spi: SpiBus<'a>, cs: PinID, rst: PinID, data: PinID, bs: BusySignal) -> Display<'a, W, H> {
+    pub fn new<'a>(p: &Board, spi: SpiBus<'a>, cs: PinID, rst: PinID, data: PinID, bs: BusySignal) -> Display<'a, W, H> {
         Display {
             bs,
             spi,
@@ -73,7 +73,7 @@ impl<const W: u16, const H: u16> Display<'_, W, H> {
             timer: p.timer().clone(),
         }
     }
-    pub fn create(p: &Pico, tx: PinID, sck: PinID, cs: PinID, rst: PinID, data: PinID, bs: BusySignal) -> Result<Display<W, H>, SpiError> {
+    pub fn create(p: &Board, tx: PinID, sck: PinID, cs: PinID, rst: PinID, data: PinID, bs: BusySignal) -> Result<Display<W, H>, SpiError> {
         Ok(Display {
             bs,
             cs: p.pin(cs).output_high(),

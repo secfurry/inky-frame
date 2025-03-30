@@ -30,7 +30,7 @@ use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 use core::result::Result::{self, Err, Ok};
 
-use rpsp::Pico;
+use rpsp::Board;
 use rpsp::clock::Timer;
 use rpsp::pin::gpio::Output;
 use rpsp::pin::{Pin, PinID};
@@ -61,9 +61,9 @@ pub enum CardType {
 }
 #[repr(u8)]
 pub enum CardError {
+    Read            = 0x1,
+    Write           = 0x2,
     Timeout         = 0x0,
-    ReadError       = 0x1,
-    WriteError      = 0x2,
     InitFailed      = 0xA,
     InvalidDevice   = 0xB,
     InvalidOptions  = 0xC,
@@ -107,11 +107,11 @@ impl Counter {
 }
 impl Card<'_> {
     #[inline(always)]
-    pub fn new<'a>(p: &Pico, cs: PinID, spi: impl Into<SpiBus<'a>>) -> Card<'a> {
+    pub fn new<'a>(p: &Board, cs: PinID, spi: impl Into<SpiBus<'a>>) -> Card<'a> {
         Card::new_crc(p, cs, spi, true)
     }
     #[inline]
-    pub fn new_crc<'a>(p: &Pico, cs: PinID, spi: impl Into<SpiBus<'a>>, crc: bool) -> Card<'a> {
+    pub fn new_crc<'a>(p: &Board, cs: PinID, spi: impl Into<SpiBus<'a>>, crc: bool) -> Card<'a> {
         Card {
             crc,
             cs: p.pin(cs).output_high(),
@@ -284,7 +284,7 @@ impl Card<'_> {
             match self.read_byte() {
                 0xFF => (),
                 0xFE => break,
-                _ => return Err(CardError::ReadError),
+                _ => return Err(CardError::Read),
             }
             c.wait()?;
         }
@@ -329,7 +329,7 @@ impl Card<'_> {
         self.spi.write(b);
         let c = if self.crc { crc_v16(b).to_be_bytes() } else { [0xFFu8, 0xFFu8] };
         self.spi.write(&c);
-        if self.read_byte() & 0x1F != 0x5 { Err(CardError::WriteError) } else { Ok(()) }
+        if self.read_byte() & 0x1F != 0x5 { Err(CardError::Write) } else { Ok(()) }
     }
     #[inline(always)]
     fn cmd_app(&mut self, x: u8, arg: u32) -> Result<u8, CardError> {
@@ -341,10 +341,10 @@ impl Card<'_> {
         self.write(0xFE, &b)?;
         self.wait_busy()?;
         if self.cmd(CMD13, 0)? != 0 {
-            return Err(CardError::WriteError);
+            return Err(CardError::Write);
         }
         if self.read_byte() != 0 {
-            return Err(CardError::WriteError);
+            return Err(CardError::Write);
         }
         Ok(())
     }
@@ -470,9 +470,9 @@ impl From<CardError> for DeviceError {
     #[inline(always)]
     fn from(v: CardError) -> DeviceError {
         match v {
+            CardError::Read => DeviceError::Read,
+            CardError::Write => DeviceError::Write,
             CardError::Timeout => DeviceError::Timeout,
-            CardError::ReadError => DeviceError::ReadError,
-            CardError::WriteError => DeviceError::WriteError,
             CardError::InvalidChecksum => DeviceError::BadData,
             CardError::InvalidOptions => DeviceError::InvalidOptions,
             _ => DeviceError::Hardware(v as u8),
@@ -485,9 +485,9 @@ impl Debug for CardError {
     #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
+            CardError::Read => f.write_str("Read"),
+            CardError::Write => f.write_str("Write"),
             CardError::Timeout => f.write_str("Timeout"),
-            CardError::ReadError => f.write_str("ReadError"),
-            CardError::WriteError => f.write_str("WriteError"),
             CardError::InitFailed => f.write_str("InitFailed"),
             CardError::InvalidDevice => f.write_str("InvalidDevice"),
             CardError::InvalidOptions => f.write_str("InvalidOptions"),

@@ -617,7 +617,7 @@ impl<'a, B: BlockDevice, S: FileSync> File<'a, B, S> {
             self.file.cluster = Some(self.vol.man.cluster_allocate(self.vol.dev, &mut d, None, false)?);
             d.clear();
         }
-        let c = self.file.cluster.ok_or(DeviceError::WriteError)?;
+        let c = self.file.cluster.ok_or(DeviceError::Write)?;
         if self.last < c {
             (self.last, self.short) = (c, 0);
         }
@@ -631,7 +631,7 @@ impl<'a, B: BlockDevice, S: FileSync> File<'a, B, S> {
                         .man
                         .cluster_allocate(self.vol.dev, &mut d, self.cluster(), false)
                         .map_err(|_| DeviceError::NoSpace)?;
-                    self.data(&mut d, &mut c).map_err(|_| DeviceError::WriteError)?
+                    self.data(&mut d, &mut c).map_err(|_| DeviceError::Write)?
                 },
                 Err(e) => return Err(e),
             };

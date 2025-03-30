@@ -104,8 +104,8 @@ On the first call, the device and it's clocks will be initialized and setup full
 The configuration is automatic and uses the ROSC as the system clock, disables
 the XOSC and PLLs and allows for DORMANT sleep, for maximum power savings.
 
-_This is similar to the RPSP `Pico::get()` setup and init behavior. The `InkyBoard`_
-_struct actually has `Deref` for the `Pico` struct and can be used as a drop-in replacement._
+_This is similar to the RPSP `Board::get()` setup and init behavior. The `InkyBoard`_
+_struct actually has `Deref` for the `Board` struct and can be used as a drop-in replacement._
 
 To supply main, you must setup the `main` function with the `#[rpsp::entry]` macro,
 which will setup the locks and properly redirect execution to the selected function.
