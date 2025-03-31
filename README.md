@@ -636,3 +636,25 @@ fn main() -> ! {
     loop {}
 }
 ```
+
+## Bugs
+
+Some SDCards don't support SPI mode or don't initialize properly. I'm not
+100% sure if it's a protocol issue or something else. These cards return
+`READY (0)` when asked to go into `IDLE (1)` mode. They'll work fine on PCs.
+
+These SDCards work fine on some of my Ender 3 3D Printers, _which use Arduino's_
+_SDCard library_ and have the same initializing sequence. But other devices, like
+the Flipper Zero, don't work with them either.
+
+You'll know if it fails as it won't get past the initialization phase and basically
+"freezes" and does not respond with the "D" and "E" LEDs on. __This error type__
+__does not use the Activity or Network LEDs.__
+
+If you have a SDCard that has issues also, please leave me an leave an [Issue](https://github.com/secfurry/inky-frame/issues/new?title=SDCard+Init+Critical)
+with information on the SDCard and it's manufactor, size and class markings
+(eg: C with the number, U with the number, etc.) so I can test further.
+
+SDCards verified to __not__ work:
+
+- [These SDHC Class 10/U1 Cards](https://www.amazon.com/dp/B07XJVFVSJ)

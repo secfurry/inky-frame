@@ -209,8 +209,6 @@ impl Card<'_> {
         r
     }
     fn _init(&mut self) -> Result<(), CardError> {
-        // TODO(sf): Fix the issue with some non-Sandisk cards not working and
-        //           freezing here.
         let mut c = self.counter();
         loop {
             match self.cmd(CMD0, 0) {
