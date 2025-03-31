@@ -651,7 +651,7 @@ You'll know if it fails as it won't get past the initialization phase and basica
 "freezes" and does not respond with the "D" and "E" LEDs on. __This error type__
 __does not use the Activity or Network LEDs.__
 
-If you have a SDCard that has issues also, please leave me an leave an [Issue](https://github.com/secfurry/inky-frame/issues/new?title=SDCard+Init+Critical)
+If you have a SDCard that has issues also, please leave an [Issue](https://github.com/secfurry/inky-frame/issues/new?title=SDCard+Init+Critical)
 with information on the SDCard and it's manufactor, size and class markings
 (eg: C with the number, U with the number, etc.) so I can test further.
 
