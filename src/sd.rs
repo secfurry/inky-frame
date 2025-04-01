@@ -211,7 +211,9 @@ impl Card<'_> {
     fn _init(&mut self) -> Result<(), CardError> {
         let (mut c, mut e, mut o) = (self.counter(), 0x40u8, 0xFFu8);
         loop {
-            match self.cmd(CMD0, 0) {
+            // 0xF9F9F9F9 - Switch to SDR12 mode. Forces fast-boot on all cards
+            // so they startup properly.
+            match self.cmd(CMD0, 0xF9F9F9F9) {
                 Err(CardError::Timeout) if e == 0 => return Err(CardError::Timeout),
                 Err(CardError::Timeout) => {
                     for _ in 0..0xFF {
@@ -238,10 +240,10 @@ impl Card<'_> {
             }
             c.wait()?;
         }
+        c.reset();
         if self.crc && self.cmd(CMD59, 0x1)? != 0x1 {
             return Err(CardError::InvalidOptions);
         }
-        c.reset();
         let a = loop {
             if self.cmd(CMD8, 0x1AA)? == 0x5 {
                 self.ver = CardType::SD1;
