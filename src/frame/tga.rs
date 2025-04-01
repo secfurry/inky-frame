@@ -511,7 +511,7 @@ fn le_u32(b: &[u8]) -> u32 {
 fn attrs(a: u8, p: u8) -> Result<u8, ImageError> {
     let r = match a {
         _ if a & !0xB != 0 => return Err(ImageError::InvalidType(a)),
-        0 => return Err(ImageError::InvalidType(a)),
+        0 => return Err(ImageError::NotTGA),
         1 if a & 0x8 != 0 => ATTRS_MAPPED_COLOR | ATTRS_IS_COMPRESSED,
         2 if a & 0x8 != 0 => ATTRS_TRUE_COLOR | ATTRS_IS_COMPRESSED,
         3 if a & 0x8 != 0 => ATTRS_GRAYSCALE | ATTRS_IS_COMPRESSED,

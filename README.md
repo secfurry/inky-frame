@@ -639,6 +639,9 @@ fn main() -> ! {
 
 ## Bugs
 
+__This should be fixed with the v0.3.0 update!__
+__Turns out some cheap vendors don't follow standard protocols, weeeeee!__
+
 Some SDCards don't support SPI mode or don't initialize properly. I'm not
 100% sure if it's a protocol issue or something else. These cards return
 `READY (0)` when asked to go into `IDLE (1)` mode. They'll work fine on PCs.

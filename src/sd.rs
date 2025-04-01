@@ -209,17 +209,32 @@ impl Card<'_> {
         r
     }
     fn _init(&mut self) -> Result<(), CardError> {
-        let mut c = self.counter();
+        let (mut c, mut e, mut o) = (self.counter(), 0x40u8, 0xFFu8);
         loop {
             match self.cmd(CMD0, 0) {
+                Err(CardError::Timeout) if e == 0 => return Err(CardError::Timeout),
                 Err(CardError::Timeout) => {
                     for _ in 0..0xFF {
                         self.spi.write_single(0xFFu8);
                     }
+                    // NOTE(sf): Timeout 64 times before giving up.
+                    e = e.saturating_sub(1);
+                    c.reset(); // Reset Counter
                 },
                 Err(e) => return Err(e),
+                // NOTE(sf): Some SDCards do not respond with 'R1_IDLE_STATE' (1)
+                //           when asked to go to IDLE. Instead, they respond with
+                //           'R1_READY_STATE' (0) or 'UNKNOWN' (63) which I don't
+                //           know what it means. But! If we keep going from here
+                //           the SDCard works perfectly!! Fucking cheap shit..
+                //
+                //           Anyway, we don't break immediately on this, we let
+                //           it cycle for 255 times before, just to be 1000% sure
+                //           that it's one of those weird cards first.
+                Ok(0x0 | 0x3F) if o == 0 => break,
+                Ok(0x0 | 0x3F) => o = o.saturating_sub(1),
                 Ok(0x1) => break,
-                Ok(_) => continue,
+                Ok(_) => (),
             }
             c.wait()?;
         }
