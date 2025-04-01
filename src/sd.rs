@@ -105,6 +105,53 @@ impl Counter {
         Ok(())
     }
 }
+impl CardInfo {
+    #[inline(always)]
+    fn new(v2: bool) -> CardInfo {
+        CardInfo { v2, buf: [0u8; 16] }
+    }
+
+    #[inline(always)]
+    pub fn crc(&self) -> u8 {
+        self.buf[0xF] & 0xFF
+    }
+    #[inline]
+    pub fn size(&self) -> u64 {
+        if self.v2 {
+            (self.device_size() as u64 + 1) * 0x200 * 0x400
+        } else {
+            (self.device_size() as u64 + 1) << (self.device_size_multiplier() as u64 * self.block_length() as u64 + 2)
+        }
+    }
+    #[inline]
+    pub fn blocks(&self) -> u32 {
+        if self.v2 {
+            (self.device_size() + 1) * 0x400
+        } else {
+            (self.device_size() + 1) << (self.device_size_multiplier() as u32 * self.block_length() as u32 + 7)
+        }
+    }
+    #[inline(always)]
+    pub fn is_v2(&self) -> bool {
+        self.v2
+    }
+    #[inline(always)]
+    pub fn block_length(&self) -> u8 {
+        self.buf[0x5] & 0xF
+    }
+    #[inline(always)]
+    pub fn device_size(&self) -> u32 {
+        if self.v2 {
+            (((self.buf[0x7] & 0x3F) as u32) << 8) | (((self.buf[0x8] & 0xFF) as u32) << 8) | ((self.buf[0x9] & 0xFF) as u32)
+        } else {
+            (((self.buf[0x6] & 0x3) as u32) << 8) | (((self.buf[0x7] & 0xFF) as u32) << 8) | (((self.buf[0x8] >> 0x6) & 0x3) as u32)
+        }
+    }
+    #[inline(always)]
+    pub fn device_size_multiplier(&self) -> u8 {
+        if self.v2 { ((self.buf[0x9] & 0x3) << 1) | (self.buf[0xA] >> 0x7) } else { 0u8 }
+    }
+}
 impl Card<'_> {
     #[inline(always)]
     pub fn new<'a>(p: &Board, cs: PinID, spi: impl Into<SpiBus<'a>>) -> Card<'a> {
@@ -393,53 +440,6 @@ impl Card<'_> {
         }
         self.cmd(CMD12, 0)?;
         Ok(())
-    }
-}
-impl CardInfo {
-    #[inline(always)]
-    fn new(v2: bool) -> CardInfo {
-        CardInfo { v2, buf: [0u8; 16] }
-    }
-
-    #[inline(always)]
-    pub fn crc(&self) -> u8 {
-        self.buf[0xF] & 0xFF
-    }
-    #[inline]
-    pub fn size(&self) -> u64 {
-        if self.v2 {
-            (self.device_size() as u64 + 1) * 0x200 * 0x400
-        } else {
-            (self.device_size() as u64 + 1) << (self.device_size_multiplier() as u64 * self.block_length() as u64 + 2)
-        }
-    }
-    #[inline]
-    pub fn blocks(&self) -> u32 {
-        if self.v2 {
-            (self.device_size() + 1) * 0x400
-        } else {
-            (self.device_size() + 1) << (self.device_size_multiplier() as u32 * self.block_length() as u32 + 7)
-        }
-    }
-    #[inline(always)]
-    pub fn is_v2(&self) -> bool {
-        self.v2
-    }
-    #[inline(always)]
-    pub fn block_length(&self) -> u8 {
-        self.buf[0x5] & 0xF
-    }
-    #[inline(always)]
-    pub fn device_size(&self) -> u32 {
-        if self.v2 {
-            (((self.buf[0x7] & 0x3F) as u32) << 8) | (((self.buf[0x8] & 0xFF) as u32) << 8) | ((self.buf[0x9] & 0xFF) as u32)
-        } else {
-            (((self.buf[0x6] & 0x3) as u32) << 8) | (((self.buf[0x7] & 0xFF) as u32) << 8) | (((self.buf[0x8] >> 0x6) & 0x3) as u32)
-        }
-    }
-    #[inline(always)]
-    pub fn device_size_multiplier(&self) -> u8 {
-        if self.v2 { ((self.buf[0x9] & 0x3) << 1) | (self.buf[0xA] >> 0x7) } else { 0u8 }
     }
 }
 
