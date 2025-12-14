@@ -24,16 +24,14 @@ extern crate rpsp;
 
 use core::cell::UnsafeCell;
 use core::convert::From;
-use core::default::Default;
 use core::fmt::{self, Debug, Formatter};
 use core::result::Result::{self, Err};
 use core::slice::{from_raw_parts, from_raw_parts_mut};
 
 use rpsp::io;
 
-use crate::fs::{Block, Volume};
-
-const PART_START: usize = 0x1BEusize;
+use crate::Slice;
+use crate::fs::{Block, Cache, Volume};
 
 pub enum DeviceError {
     // Standard IO Errors
@@ -67,117 +65,97 @@ pub enum DeviceError {
     InvalidChecksum,
     InvalidPartition,
     InvalidFileSystem,
-    UnsupportedVolume(u8),
     UnsupportedFileSystem,
+    UnsupportedVolume(u8),
 }
 
 pub struct Storage<B: BlockDevice> {
     dev: UnsafeCell<B>,
 }
 
-pub type Error = io::Error<DeviceError>;
-
 pub trait BlockDevice {
-    fn blocks(&mut self) -> Result<u32, DeviceError>;
-    fn write(&mut self, b: &[Block], start: u32) -> Result<(), DeviceError>;
-    fn read(&mut self, b: &mut [Block], start: u32) -> Result<(), DeviceError>;
+    fn blocks(&mut self) -> DevResult<u32>;
+    fn write(&mut self, b: &[Block], start: u32) -> DevResult<()>;
+    fn read(&mut self, b: &mut [Block], start: u32) -> DevResult<()>;
 
     #[inline]
-    fn write_single(&mut self, b: &Block, start: u32) -> Result<(), DeviceError> {
+    fn write_single(&mut self, b: &Block, start: u32) -> DevResult<()> {
         let v = unsafe { from_raw_parts(b, 1) };
         self.write(v, start)
     }
     #[inline]
-    fn read_single(&mut self, b: &mut Block, start: u32) -> Result<(), DeviceError> {
+    fn read_single(&mut self, b: &mut Block, start: u32) -> DevResult<()> {
         let v = unsafe { from_raw_parts_mut(b, 1) };
         self.read(v, start)
     }
 }
 
+pub type Error = io::Error<DeviceError>;
+
+pub type DevError = io::Error<DeviceError>;
+pub type DevResult<T> = Result<T, DeviceError>;
+
 impl<B: BlockDevice> Storage<B> {
-    #[inline(always)]
-    pub fn new(dev: B) -> Storage<B> {
+    #[inline]
+    pub const fn new(dev: B) -> Storage<B> {
         Storage { dev: UnsafeCell::new(dev) }
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn device(&self) -> &mut B {
         unsafe { &mut *self.dev.get() }
     }
-    #[inline(always)]
-    pub fn root<'a>(&'a self) -> Result<Volume<'a, B>, DeviceError> {
+    #[inline]
+    pub fn root<'a>(&'a self) -> DevResult<Volume<'a, B>> {
         self.volume(0)
     }
-    pub fn volume<'a>(&'a self, index: usize) -> Result<Volume<'a, B>, DeviceError> {
+    #[inline]
+    pub fn write(&self, b: &[Block], start: u32) -> DevResult<()> {
+        self.device().write(b, start)
+    }
+    #[inline]
+    pub fn read(&self, b: &mut [Block], start: u32) -> DevResult<()> {
+        self.device().read(b, start)
+    }
+    #[inline]
+    pub fn write_single(&self, b: &Block, start: u32) -> DevResult<()> {
+        self.device().write_single(b, start)
+    }
+    #[inline]
+    pub fn read_single(&self, b: &mut Block, start: u32) -> DevResult<()> {
+        self.device().read_single(b, start)
+    }
+    #[inline]
+    pub fn volume<'a>(&'a self, index: usize) -> DevResult<Volume<'a, B>> {
         if index > 3 {
             return Err(DeviceError::NotFound);
         }
-        let mut b = Block::default();
-        self.read_single(&mut b, 0)?;
-        if le_u16(&b[0x1FE..]) != 0xAA55 {
+        let mut b = Cache::block_a();
+        let _ = self.read_single(&mut b, 0)?;
+        if b.read_u16(510) != 0xAA55 {
             return Err(DeviceError::InvalidPartition);
         }
-        let i = PART_START + (0x10 * index);
-        if i + 12 > Block::SIZE {
+        let i = 0x1BE + (16 * index);
+        if i + 16 > Block::SIZE {
             return Err(DeviceError::NotFound);
         }
-        if b[i] & 0x7F != 0 {
+        if b.read_u8(i) & 0x7F != 0 {
             return Err(DeviceError::InvalidPartition);
         }
-        match b[i + 4] {
+        match b.read_u8(i + 4) {
             // NOTE(sf): All these types could have FAT volumes. We'll work it
-            // out after, but we can at least take on more types.
+            //           out after, but we can at least take on more types.
+            //           These are also the "parition type" flag when using parted/fdisk.
             0x6 | 0xB | 0xE | 0xC | 0x16 | 0x1B | 0x1E | 0x66 | 0x76 | 0x83 | 0x92 | 0x97 | 0x98 | 0x9A | 0xD0 | 0xE4 | 0xE6 | 0xEF | 0xF4 | 0xF6 => (),
-            _ => return Err(DeviceError::UnsupportedVolume(b[i + 4])),
+            v => return Err(DeviceError::UnsupportedVolume(v)),
         }
-        let (s, n) = (le_u32(&b[i + 8..]), le_u32(&b[i + 12..]));
-        Volume::parse(self, b, s, n)
-    }
-
-    #[inline(always)]
-    pub(super) fn write(&self, b: &[Block], start: u32) -> Result<(), DeviceError> {
-        self.device().write(b, start)
-    }
-    #[inline(always)]
-    pub(super) fn read(&self, b: &mut [Block], start: u32) -> Result<(), DeviceError> {
-        self.device().read(b, start)
-    }
-    #[inline(always)]
-    pub(super) fn write_single(&self, b: &Block, start: u32) -> Result<(), DeviceError> {
-        self.device().write_single(b, start)
-    }
-    #[inline(always)]
-    pub(super) fn read_single(&self, b: &mut Block, start: u32) -> Result<(), DeviceError> {
-        self.device().read_single(b, start)
+        let (s, n) = (b.read_u32(i + 8), b.read_u32(i + 12));
+        Volume::new(self, &mut b, s, n)
     }
 }
 
-impl From<DeviceError> for Error {
-    #[inline]
-    fn from(v: DeviceError) -> Error {
-        match v {
-            DeviceError::Read => Error::Read,
-            DeviceError::Write => Error::Write,
-            DeviceError::Timeout => Error::Timeout,
-            DeviceError::EndOfFile => Error::EndOfFile,
-            DeviceError::UnexpectedEoF => Error::UnexpectedEof,
-            DeviceError::NoSpace => Error::NoSpace,
-            DeviceError::NotAFile => Error::NotAFile,
-            DeviceError::NotFound => Error::NotFound,
-            DeviceError::Overflow => Error::Overflow,
-            DeviceError::NotReadable => Error::NotReadable,
-            DeviceError::NotWritable => Error::NotWritable,
-            DeviceError::NotADirectory => Error::NotADirectory,
-            DeviceError::NonEmptyDirectory => Error::NonEmptyDirectory,
-            DeviceError::InvalidIndex => Error::InvalidIndex,
-            DeviceError::InvalidOptions => Error::InvalidOptions,
-            _ => Error::Other(v),
-        }
-    }
-}
-
-#[cfg(feature = "debug")]
 impl Debug for DeviceError {
+    #[cfg(feature = "debug")]
     #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
@@ -209,32 +187,33 @@ impl Debug for DeviceError {
             DeviceError::UnsupportedFileSystem => f.write_str("UnsupportedFileSystem"),
         }
     }
-}
-#[cfg(not(feature = "debug"))]
-impl Debug for DeviceError {
-    #[inline(always)]
+    #[cfg(not(feature = "debug"))]
+    #[inline]
     fn fmt(&self, _f: &mut Formatter<'_>) -> fmt::Result {
         Result::Ok(())
     }
 }
 
-#[inline(always)]
-pub(super) fn le_u16(b: &[u8]) -> u16 {
-    (b[0] as u16) | (b[1] as u16) << 8
-}
-#[inline(always)]
-pub(super) fn le_u32(b: &[u8]) -> u32 {
-    (b[0] as u32) | (b[1] as u32) << 8 | (b[2] as u32) << 16 | (b[3] as u32) << 24
-}
-#[inline]
-pub(super) fn to_le_u16(v: u16, b: &mut [u8]) {
-    b[0] = v as u8;
-    b[1] = (v >> 8) as u8;
-}
-#[inline]
-pub(super) fn to_le_u32(v: u32, b: &mut [u8]) {
-    b[0] = v as u8;
-    b[1] = (v >> 8) as u8;
-    b[2] = (v >> 16) as u8;
-    b[3] = (v >> 24) as u8;
+impl From<DeviceError> for DevError {
+    #[inline]
+    fn from(v: DeviceError) -> DevError {
+        match v {
+            DeviceError::Read => Error::Read,
+            DeviceError::Write => Error::Write,
+            DeviceError::NoSpace => Error::NoSpace,
+            DeviceError::Timeout => Error::Timeout,
+            DeviceError::Overflow => Error::Overflow,
+            DeviceError::NotAFile => Error::NotAFile,
+            DeviceError::NotFound => Error::NotFound,
+            DeviceError::EndOfFile => Error::EndOfFile,
+            DeviceError::NotReadable => Error::NotReadable,
+            DeviceError::NotWritable => Error::NotWritable,
+            DeviceError::InvalidIndex => Error::InvalidIndex,
+            DeviceError::NotADirectory => Error::NotADirectory,
+            DeviceError::UnexpectedEoF => Error::UnexpectedEof,
+            DeviceError::InvalidOptions => Error::InvalidOptions,
+            DeviceError::NonEmptyDirectory => Error::NonEmptyDirectory,
+            _ => Error::Other(v),
+        }
+    }
 }

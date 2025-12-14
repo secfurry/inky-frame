@@ -35,7 +35,7 @@ use rpsp::spi::{Spi, SpiBus, SpiConfig, SpiError, SpiFormat, SpiIO, SpiPhase, Sp
 
 use crate::frame::ShiftRegister;
 
-const SR_BUSY: u8 = 7u8;
+const BUSY: u8 = 7u8;
 const BAUDRATE: u32 = 3_000_000u32;
 
 pub enum BusySignal {
@@ -57,13 +57,13 @@ impl BusySignal {
     fn is_ready(&self) -> bool {
         match self {
             BusySignal::Pin(v) => v.is_high(),
-            BusySignal::SR(v) => v.is_set(SR_BUSY),
+            BusySignal::SR(v) => v.is_set(BUSY),
         }
     }
 }
-impl<const W: u16, const H: u16> Display<'_, W, H> {
+impl<'a, const W: u16, const H: u16> Display<'a, W, H> {
     #[inline]
-    pub fn new<'a>(p: &Board, spi: SpiBus<'a>, cs: PinID, rst: PinID, data: PinID, bs: BusySignal) -> Display<'a, W, H> {
+    pub fn new(p: &'a Board, spi: SpiBus<'a>, cs: PinID, rst: PinID, data: PinID, bs: BusySignal) -> Display<'a, W, H> {
         Display {
             bs,
             spi,
@@ -73,7 +73,7 @@ impl<const W: u16, const H: u16> Display<'_, W, H> {
             timer: p.timer().clone(),
         }
     }
-    pub fn create(p: &Board, tx: PinID, sck: PinID, cs: PinID, rst: PinID, data: PinID, bs: BusySignal) -> Result<Display<W, H>, SpiError> {
+    pub fn create(p: &'a Board, tx: PinID, sck: PinID, cs: PinID, rst: PinID, data: PinID, bs: BusySignal) -> Result<Display<'a, W, H>, SpiError> {
         Ok(Display {
             bs,
             cs: p.pin(cs).output_high(),
@@ -96,6 +96,22 @@ impl<const W: u16, const H: u16> Display<'_, W, H> {
     }
 
     #[inline]
+    pub const fn width(&self) -> u16 {
+        W
+    }
+    #[inline]
+    pub const fn height(&self) -> u16 {
+        H
+    }
+    #[inline]
+    pub const fn shift_register(&self) -> Option<&ShiftRegister> {
+        match &self.bs {
+            BusySignal::Pin(_) => None,
+            BusySignal::SR(v) => Some(v),
+        }
+    }
+
+    #[inline]
     pub fn off(&mut self) {
         self.wait();
         self.cmd(0x2) // POF
@@ -113,22 +129,15 @@ impl<const W: u16, const H: u16> Display<'_, W, H> {
         self.cmd(0x12);
         self.wait();
     }
-    #[inline(always)]
-    pub fn width(&self) -> u16 {
-        W
-    }
-    #[inline(always)]
-    pub fn height(&self) -> u16 {
-        H
-    }
-    #[inline(always)]
+    #[inline]
     pub fn is_busy(&self) -> bool {
         !self.bs.is_ready()
     }
-    #[inline(always)]
+    #[inline]
     pub fn is_ready(&self) -> bool {
         self.bs.is_ready()
     }
+    #[inline]
     pub fn update(&mut self, b: &[u8]) {
         self.setup();
         self.cmd_data(0x10, b); // DTM1
@@ -139,21 +148,13 @@ impl<const W: u16, const H: u16> Display<'_, W, H> {
         self.wait();
         self.cmd(0x2); // POF
     }
-    #[inline(always)]
+    #[inline]
     pub fn spi_bus(&mut self) -> &mut Spi {
         &mut self.spi
     }
-    #[inline(always)]
-    pub fn shift_register(&self) -> Option<&ShiftRegister> {
-        match &self.bs {
-            BusySignal::Pin(_) => None,
-            BusySignal::SR(v) => Some(v),
-        }
-    }
 
-    /// Returns immediately, the user must issue a
-    /// POF command using the 'off' function once
-    /// the display refresh is complete.
+    /// Returns immediately, the user must issue a POF command using the 'off'
+    /// function once the display refresh is complete.
     pub unsafe fn update_async(&mut self, b: &[u8]) {
         self.setup();
         self.cmd_data(0x10, b); // DTM1
@@ -169,6 +170,14 @@ impl<const W: u16, const H: u16> Display<'_, W, H> {
             self.timer.sleep_ms(10);
         }
     }
+    #[inline]
+    fn reset(&self) {
+        self.rst.low();
+        self.timer.sleep_ms(10);
+        self.rst.high();
+        self.timer.sleep_ms(10);
+        self.wait();
+    }
     fn setup(&mut self) {
         self.reset();
         self.cmd_data(0x0, &[0xAF | if W == 600 { 0x40 } else { 0 }, 0x8]); // PSR
@@ -179,24 +188,26 @@ impl<const W: u16, const H: u16> Display<'_, W, H> {
         self.cmd_data(0x40, &[0]); // TSC
         self.cmd_data(0x50, &[0x37]); // CDI
         self.cmd_data(0x60, &[0x22]); // TCON
-        self.cmd_data(0x61, &[(W >> 8) as u8, W as u8, (H >> 8) as u8, H as u8]); // TRES
+        unsafe {
+            self.cmd_data(0x61, &[
+                W.unchecked_shr(8) as u8,
+                W as u8,
+                H.unchecked_shr(8) as u8,
+                H as u8,
+            ]); // TRES
+        }
         self.cmd_data(0xE3, &[0xAA]); // PWS
         self.timer.sleep_ms(100);
         self.cmd_data(0x50, &[0x37]) // CDI
     }
-    fn reset(&self) {
-        self.rst.low();
-        self.timer.sleep_ms(10);
-        self.rst.high();
-        self.timer.sleep_ms(10);
-        self.wait();
-    }
+    #[inline]
     fn cmd(&mut self, v: u8) {
         self.cs.low();
         self.data.low();
         self.spi.write_single(v);
         self.cs.high();
     }
+    #[inline]
     fn cmd_data(&mut self, v: u8, b: &[u8]) {
         self.cs.low();
         self.data.low();

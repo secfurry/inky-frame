@@ -53,52 +53,52 @@ static CACHE: Cache = Cache::new();
 pub struct BlockPtr(NonNull<Block>);
 
 struct CacheInner {
-    lfn:     LongName,
-    block_a: Block,
-    block_b: Block,
+    a:   Block,
+    b:   Block,
+    lfn: LongName,
 }
 struct Cache(UnsafeCell<CacheInner>);
 struct LongNamePtr(NonNull<LongName>);
 
 impl Cache {
-    #[inline(always)]
+    #[inline]
     const fn new() -> Cache {
         Cache(UnsafeCell::new(CacheInner {
-            lfn:     LongName::empty(),
-            block_a: Block::new(),
-            block_b: Block::new(),
+            a:   Block::new(),
+            b:   Block::new(),
+            lfn: LongName::empty(),
         }))
     }
 
-    #[inline(always)]
+    #[inline]
     fn lfn() -> LongNamePtr {
         let c = Spinlock30::claim();
         forget(c);
         LongNamePtr(unsafe { NonNull::new_unchecked(&mut (&mut *CACHE.0.get()).lfn) })
     }
-    #[inline(always)]
+    #[inline]
     fn block_a() -> BlockPtr {
         let c = Spinlock29::claim();
         forget(c);
-        BlockPtr(unsafe { NonNull::new_unchecked(&mut (&mut *CACHE.0.get()).block_a) })
+        BlockPtr(unsafe { NonNull::new_unchecked(&mut (&mut *CACHE.0.get()).a) })
     }
-    #[inline(always)]
+    #[inline]
     fn block_b() -> BlockPtr {
         let c = Spinlock28::claim();
         forget(c);
-        BlockPtr(unsafe { NonNull::new_unchecked(&mut (&mut *CACHE.0.get()).block_b) })
+        BlockPtr(unsafe { NonNull::new_unchecked(&mut (&mut *CACHE.0.get()).b) })
     }
 
-    #[inline(always)]
+    #[inline]
     unsafe fn block_a_nolock() -> BlockPtr {
-        BlockPtr(unsafe { NonNull::new_unchecked(&mut (&mut *CACHE.0.get()).block_a) })
+        BlockPtr(unsafe { NonNull::new_unchecked(&mut (&mut *CACHE.0.get()).a) })
     }
 }
 
 impl Drop for BlockPtr {
-    #[inline(always)]
+    #[inline]
     fn drop(&mut self) {
-        if unsafe { self.0.as_ref() }.as_ptr() == unsafe { (*CACHE.0.get()).block_a.as_ptr() } {
+        if unsafe { self.0.as_ref() }.as_ptr() == unsafe { (*CACHE.0.get()).a.as_ptr() } {
             unsafe { Spinlock29::free() }
         } else {
             unsafe { Spinlock28::free() }
@@ -108,20 +108,20 @@ impl Drop for BlockPtr {
 impl Deref for BlockPtr {
     type Target = Block;
 
-    #[inline(always)]
+    #[inline]
     fn deref(&self) -> &Block {
         unsafe { self.0.as_ref() }
     }
 }
 impl DerefMut for BlockPtr {
-    #[inline(always)]
+    #[inline]
     fn deref_mut(&mut self) -> &mut Block {
         unsafe { &mut *self.0.as_ptr() }
     }
 }
 
 impl Drop for LongNamePtr {
-    #[inline(always)]
+    #[inline]
     fn drop(&mut self) {
         unsafe { Spinlock30::free() }
     }
@@ -129,13 +129,13 @@ impl Drop for LongNamePtr {
 impl Deref for LongNamePtr {
     type Target = LongName;
 
-    #[inline(always)]
+    #[inline]
     fn deref(&self) -> &LongName {
         unsafe { self.0.as_ref() }
     }
 }
 impl DerefMut for LongNamePtr {
-    #[inline(always)]
+    #[inline]
     fn deref_mut(&mut self) -> &mut LongName {
         unsafe { &mut *self.0.as_ptr() }
     }

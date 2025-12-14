@@ -22,12 +22,12 @@
 extern crate core;
 extern crate rpsp;
 
-use core::cmp::{self, PartialEq};
+use core::cmp::{Ord, PartialEq};
 use core::convert::From;
 use core::marker::Send;
 use core::mem::MaybeUninit;
 use core::ops::Deref;
-use core::option::Option::{self, None};
+use core::option::Option::{self};
 use core::ptr::NonNull;
 use core::result::Result::{self, Ok};
 
@@ -38,7 +38,7 @@ use rpsp::pin::gpio::Output;
 use rpsp::pin::{Pin, PinID};
 use rpsp::spi::{Spi, SpiConfig, SpiDev, SpiFormat, SpiPhase, SpiPolarity};
 use rpsp::time::Time;
-use rpsp::{Board, ignore_error, static_instance};
+use rpsp::{Board, static_instance};
 
 use crate::frame::ShiftRegister;
 use crate::fs::Storage;
@@ -59,21 +59,21 @@ pub struct InkyBoard<'a> {
 }
 
 struct Inner<'a> {
+    pwr:     Pin<Output>,
     rtc:     PcfRtc<'a>,
     spi:     Option<Spi>,
-    pwr:     Pin<Output>,
     leds:    Leds,
     wake:    WakeReason,
     buttons: Buttons,
 }
 
 impl<'a> Inner<'a> {
-    #[inline(always)]
+    #[inline]
     const fn new() -> MaybeUninit<Inner<'a>> {
         MaybeUninit::zeroed()
     }
 
-    #[inline(always)]
+    #[inline]
     fn is_ready(&self) -> bool {
         PinID::Pin0.ne(self.pwr.id())
     }
@@ -81,7 +81,6 @@ impl<'a> Inner<'a> {
     fn setup(&mut self, p: &Board) {
         // NOTE(sf): Ensure that VSYS_HOLD is enabled so we stay on during boot.
         self.pwr = Pin::get(&p, PinID::Pin2).output_high();
-        self.spi = None;
         let s = ShiftRegister::new(&p, PinID::Pin8, PinID::Pin9, PinID::Pin10);
         let w = s.read();
         self.wake = WakeReason::from(w);
@@ -91,10 +90,10 @@ impl<'a> Inner<'a> {
         //           due to the const configuration.
         self.rtc = PcfRtc::new(unsafe { I2cController::new(&p, PinID::Pin4, PinID::Pin5, PFC_RTC_HZ).unwrap_unchecked() });
         // Don't care if we can't clear the PFC state, we're already online.
-        ignore_error!(self.rtc.alarm_clear_state());
-        ignore_error!(self.rtc.alarm_disable());
-        ignore_error!(self.rtc.set_timer_interrupt(false, false));
-        self.leds = Leds::new(p)
+        let _ = self.rtc.alarm_clear_state();
+        let _ = self.rtc.alarm_disable();
+        let _ = self.rtc.set_timer_interrupt(false, false);
+        self.leds = Leds::new(p);
     }
 }
 impl<'a> InkyBoard<'a> {
@@ -115,13 +114,13 @@ impl<'a> InkyBoard<'a> {
         }
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn leds(&self) -> &Leds {
         &self.ptr().leds
     }
     #[inline]
     pub fn spi_bus(&self) -> &Spi {
-        // NOTE(sf): Lazy make the SPI bus.
+        // Lazy make the SPI bus.
         self.ptr().spi.get_or_insert_with(|| unsafe {
             // NOTE(sf): 'unwrap_unchecked' is used as the 'SPI::new' call can
             //           only return 'InvalidFrequency' or 'InvalidPins', which
@@ -145,51 +144,51 @@ impl<'a> InkyBoard<'a> {
     }
     #[inline]
     pub fn sync_pcf_to_rtc(&self) {
-        ignore_error!(self.p.rtc().set_time_from(self.pcf()));
+        let _ = self.p.rtc().set_time_from(self.pcf());
     }
     #[inline]
     pub fn sync_rtc_to_pcf(&self) {
-        ignore_error!(self.pcf().set_time_from(self.p.rtc()));
+        let _ = self.pcf().set_time_from(self.p.rtc());
     }
-    #[inline(always)]
+    #[inline]
+    pub fn pcf(&self) -> &mut PcfRtc<'a> {
+        &mut self.ptr().rtc
+    }
+    #[inline]
     pub fn buttons(&self) -> &mut Buttons {
         &mut self.ptr().buttons
     }
     #[inline]
     pub fn set_rtc_and_pcf(&self, v: Time) {
-        ignore_error!(self.p.rtc().set_time(v));
-        ignore_error!(self.pcf().set_time(v));
+        let _ = self.p.rtc().set_time(v);
+        let _ = self.pcf().set_time(v);
     }
-    #[inline(always)]
+    #[inline]
     pub fn wake_reason(&self) -> WakeReason {
         self.ptr().wake
     }
-    #[inline(always)]
+    #[inline]
     pub fn i2c_bus(&self) -> &I2cController {
         self.ptr().rtc.i2c_bus()
     }
-    #[inline(always)]
-    pub fn pcf(&'a self) -> &'a mut PcfRtc<'a> {
-        &mut self.ptr().rtc
-    }
-    #[inline(always)]
+    #[inline]
     pub fn sd_card(&self) -> Storage<Card<'_>> {
         Storage::new(Card::new(&self.p, PinID::Pin22, self.spi_bus()))
     }
-    #[inline(always)]
+    #[inline]
     pub fn shift_register(&self) -> &ShiftRegister {
-        &self.ptr().buttons.shift_register()
+        self.ptr().buttons.shift_register()
     }
     /// Returns wait period in milliseconds.
     pub fn set_rtc_wake(&self, secs: u32) -> Result<u32, RtcError> {
         let d = self.pcf();
-        let mut v = d.now()?.add_seconds(cmp::min(secs as i64, 0x24EA00));
+        let mut v = d.now()?.add_seconds((secs as i64).min(0x24EA00));
         if v.secs >= 55 && v.mins <= 58 {
-            // NOTE(sf): Account for a bug in the RTC, from MicroPython.
+            // Account for a bug in the RTC, from MicroPython.
             (v.secs, v.mins) = (5, v.mins + 1);
         }
-        d.alarm_clear_state()?;
-        d.set_alarm(
+        let _ = d.alarm_clear_state()?;
+        let _ = d.set_alarm(
             AlarmConfig::new()
                 .month(v.month)
                 .day(v.day)
@@ -197,8 +196,8 @@ impl<'a> InkyBoard<'a> {
                 .mins(v.mins)
                 .secs(v.secs),
         )?;
-        d.set_alarm_interrupt(true)?;
-        Ok((secs * 1_000) & 0xFFFFFFFF)
+        let _ = d.set_alarm_interrupt(true)?;
+        Ok(secs.saturating_mul(1_000))
     }
 
     /// SAFETY: This is unsafe as this will immediately power off the
@@ -220,22 +219,23 @@ impl<'a> InkyBoard<'a> {
     /// The device will wake up after the specified number of seconds. If
     /// powered externally by USB or External (non-Battery), the device will
     /// sleep for the period of time instead.
+    #[inline]
     pub unsafe fn deep_sleep(&self, secs: u32) -> Result<(), RtcError> {
         let v = self.set_rtc_wake(secs)?;
         unsafe { self.power_off() };
-        // NOTE(sf): On battery power, the next lines will NOT run.
+        // On battery power, the next lines will NOT run.
         self.p.sleep(v);
         let d: &mut PcfRtc<'_> = self.pcf();
         // Ignore reset errors, as these only affect calls that don't
         // need the PFC to wake them up.
-        ignore_error!(d.alarm_clear_state());
-        ignore_error!(d.alarm_disable());
-        ignore_error!(d.set_timer_interrupt(false, false));
+        let _ = d.alarm_clear_state();
+        let _ = d.alarm_disable();
+        let _ = d.set_timer_interrupt(false, false);
         Ok(())
     }
 
-    #[inline(always)]
-    fn ptr(&self) -> &mut Inner {
+    #[inline]
+    fn ptr(&self) -> &mut Inner<'a> {
         unsafe { &mut *self.i.as_ptr() }
     }
 }
@@ -243,7 +243,7 @@ impl<'a> InkyBoard<'a> {
 impl Deref for InkyBoard<'_> {
     type Target = Board;
 
-    #[inline(always)]
+    #[inline]
     fn deref(&self) -> &Board {
         &self.p
     }

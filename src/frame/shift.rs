@@ -23,6 +23,7 @@ extern crate core;
 extern crate rpsp;
 
 use core::clone::Clone;
+use core::cmp::Ord;
 use core::convert::From;
 
 use rpsp::Board;
@@ -58,7 +59,7 @@ impl ShiftRegister {
         let (mut r, mut b) = (0u8, 8u8);
         while b > 0 {
             b -= 1;
-            r <<= 1;
+            r = unsafe { r.unchecked_shl(1) };
             if self.data.is_high() {
                 r |= 1
             } else {
@@ -71,18 +72,18 @@ impl ShiftRegister {
         }
         r
     }
-    #[inline(always)]
+    #[inline]
     pub fn is_set(&self, v: u8) -> bool {
-        self.read() & (1 << v) != 0
+        unsafe { self.read() & 1u8.unchecked_shl((v as u32).min(7)) != 0 }
     }
-    #[inline(always)]
+    #[inline]
     pub fn read_wake(&self) -> WakeReason {
         WakeReason::from(self.read())
     }
 }
 
 impl Clone for ShiftRegister {
-    #[inline(always)]
+    #[inline]
     fn clone(&self) -> ShiftRegister {
         ShiftRegister {
             lat:   self.lat.clone(),

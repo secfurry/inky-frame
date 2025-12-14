@@ -492,7 +492,7 @@ fn main() -> ! {
 
 ## Standard Examples
 
-These are taken from [here](https://github.com/secfurry/rpsp/blob/main/README.md),
+These are taken [from here](https://github.com/secfurry/rpsp/blob/main/README.md),
 but are modified to show the drop-in replacement of the `InkyBoard` struct.
 
 ### GPIO

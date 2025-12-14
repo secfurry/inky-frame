@@ -25,10 +25,10 @@ extern crate rpsp;
 use core::clone::Clone;
 use core::convert::{From, Into};
 use core::fmt::{self, Debug, Formatter};
-use core::matches;
-use core::ops::{Deref, DerefMut};
-use core::ptr::NonNull;
+use core::ops::Deref;
+use core::ptr::{NonNull, write_bytes};
 use core::result::Result::{self, Err, Ok};
+use core::{matches, unreachable};
 
 use rpsp::Board;
 use rpsp::clock::Timer;
@@ -36,7 +36,8 @@ use rpsp::pin::gpio::Output;
 use rpsp::pin::{Pin, PinID};
 use rpsp::spi::{Spi, SpiBus, SpiIO};
 
-use crate::fs::{Block, BlockDevice, DeviceError};
+use crate::fs::{Block, BlockDevice, DevResult, DeviceError};
+use crate::{Slice, SliceMut};
 
 const CMD0: u8 = 0x00u8;
 const CMD8: u8 = 0x08u8;
@@ -76,51 +77,59 @@ pub struct CardInfo {
     buf: [u8; 16],
 }
 pub struct Card<'a> {
-    cs:       Pin<Output>,
-    spi:      SpiBus<'a>,
-    timer:    Timer,
-    ver:      CardType,
-    crc:      bool,
-    attempts: u16,
+    cs:  Pin<Output>,
+    clk: Timer,
+    crc: bool,
+    spi: SpiBus<'a>,
+    ver: CardType,
 }
 
 struct Counter {
-    t:   NonNull<Timer>,
-    cur: u16,
-    hit: u16,
+    c: u16,
+    t: NonNull<Timer>,
 }
 
 impl Counter {
-    #[inline(always)]
+    const ATTEMPTS: u16 = 0x5FFFu16;
+
+    #[inline]
+    fn new(v: &mut Card<'_>) -> Counter {
+        Counter {
+            c: Counter::ATTEMPTS,
+            t: unsafe { NonNull::new_unchecked(&mut v.clk) },
+        }
+    }
+
+    #[inline]
     fn reset(&mut self) {
-        self.cur = 0;
+        self.c = Counter::ATTEMPTS;
     }
     #[inline]
     fn wait(&mut self) -> Result<(), CardError> {
-        if self.cur >= self.hit {
+        if self.c == 0 {
             return Err(CardError::Timeout);
         }
         unsafe { (&*self.t.as_ptr()).sleep_us(10) };
-        self.cur += 1;
+        self.c = self.c.saturating_sub(1);
         Ok(())
     }
 }
 impl CardInfo {
-    #[inline(always)]
+    #[inline]
     fn new(v2: bool) -> CardInfo {
         CardInfo { v2, buf: [0u8; 16] }
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn crc(&self) -> u8 {
-        self.buf[0xF] & 0xFF
+        self.buf.read_u8(15)
     }
     #[inline]
     pub fn size(&self) -> u64 {
         if self.v2 {
             (self.device_size() as u64 + 1) * 0x200 * 0x400
         } else {
-            (self.device_size() as u64 + 1) << (self.device_size_multiplier() as u64 * self.block_length() as u64 + 2)
+            unsafe { (self.device_size() as u64 + 1).unchecked_shl((self.device_size_multiplier() as u64 * self.block_length() as u64 + 2) as u32) }
         }
     }
     #[inline]
@@ -128,58 +137,61 @@ impl CardInfo {
         if self.v2 {
             (self.device_size() + 1) * 0x400
         } else {
-            (self.device_size() + 1) << (self.device_size_multiplier() as u32 * self.block_length() as u32 + 7)
+            unsafe { (self.device_size() + 1).unchecked_shl(self.device_size_multiplier() as u32 * self.block_length() as u32 + 7) }
         }
     }
-    #[inline(always)]
+    #[inline]
     pub fn is_v2(&self) -> bool {
         self.v2
     }
-    #[inline(always)]
+    #[inline]
     pub fn block_length(&self) -> u8 {
-        self.buf[0x5] & 0xF
+        self.buf.read_u8(5) & 0xF
     }
-    #[inline(always)]
+    #[inline]
     pub fn device_size(&self) -> u32 {
         if self.v2 {
-            (((self.buf[0x7] & 0x3F) as u32) << 8) | (((self.buf[0x8] & 0xFF) as u32) << 8) | ((self.buf[0x9] & 0xFF) as u32)
+            unsafe { ((self.buf.read_u8(7) & 0x3F) as u32).unchecked_shl(8) | (self.buf.read_u8(8) as u32).unchecked_shl(8) | (self.buf.read_u8(9) as u32) }
         } else {
-            (((self.buf[0x6] & 0x3) as u32) << 8) | (((self.buf[0x7] & 0xFF) as u32) << 8) | (((self.buf[0x8] >> 0x6) & 0x3) as u32)
+            unsafe { ((self.buf.read_u8(6) & 0x03) as u32).unchecked_shl(8) | (self.buf.read_u8(7) as u32).unchecked_shl(8) | (self.buf.read_u8(8).unchecked_shr(6) & 0x3) as u32 }
         }
     }
-    #[inline(always)]
+    #[inline]
     pub fn device_size_multiplier(&self) -> u8 {
-        if self.v2 { ((self.buf[0x9] & 0x3) << 1) | (self.buf[0xA] >> 0x7) } else { 0u8 }
+        if self.v2 {
+            unsafe { (self.buf.read_u8(9) & 0x3).unchecked_shl(1) | self.buf.read_u8(10).unchecked_shr(7) }
+        } else {
+            0
+        }
     }
 }
-impl Card<'_> {
-    #[inline(always)]
-    pub fn new<'a>(p: &Board, cs: PinID, spi: impl Into<SpiBus<'a>>) -> Card<'a> {
+impl<'a> Card<'a> {
+    #[inline]
+    pub fn new(p: &Board, cs: PinID, spi: impl Into<SpiBus<'a>>) -> Card<'a> {
         Card::new_crc(p, cs, spi, true)
     }
     #[inline]
-    pub fn new_crc<'a>(p: &Board, cs: PinID, spi: impl Into<SpiBus<'a>>, crc: bool) -> Card<'a> {
+    pub fn new_crc(p: &Board, cs: PinID, spi: impl Into<SpiBus<'a>>, crc: bool) -> Card<'a> {
         Card {
             crc,
             cs: p.pin(cs).output_high(),
+            clk: p.timer().clone(),
             spi: spi.into(),
             ver: CardType::None,
-            timer: p.timer().clone(),
-            attempts: 0xFFFu16,
         }
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn bus(&self) -> &Spi {
         &self.spi
     }
-    #[inline(always)]
+    #[inline]
     pub fn blocks(&mut self) -> Result<u32, CardError> {
         Ok(self.info()?.blocks())
     }
     pub fn info(&mut self) -> Result<CardInfo, CardError> {
-        if matches!(self.ver, CardType::None) {
-            self.init()?;
+        if let CardType::None = self.ver {
+            let _ = self.init()?;
         }
         let mut i = match self.ver {
             CardType::None => return Err(CardError::InitFailed),
@@ -188,64 +200,67 @@ impl Card<'_> {
         };
         self.cs.low();
         let r = match self.cmd(CMD9, 0) {
-            Ok(v) if v == 0 => self.read(&mut i.buf),
+            Ok(v) if v == 0 => {
+                self.read(&mut i.buf)?;
+                Ok(i)
+            },
             Ok(_) => Err(CardError::InvalidResponse),
             Err(e) => Err(e),
         };
         self.cs.high();
-        r.map(|_| i)
+        r
     }
     #[inline]
     pub fn write_block(&mut self, b: &Block, start: u32) -> Result<(), CardError> {
-        if matches!(self.ver, CardType::None) {
-            self.init()?;
+        if let CardType::None = self.ver {
+            let _ = self.init()?;
         }
         self.cs.low();
-        let r = self._write_block(b, self.index(start)?);
+        let r = self._write_block(b, self.index(start));
         self.cs.high();
         r
     }
     #[inline]
     pub fn read_block(&mut self, b: &mut Block, start: u32) -> Result<(), CardError> {
-        if matches!(self.ver, CardType::None) {
-            self.init()?;
+        if let CardType::None = self.ver {
+            let _ = self.init()?;
         }
         self.cs.low();
-        let r = self._read_block(b, self.index(start)?);
+        let r = self._read_block(b, self.index(start));
         self.cs.high();
         r
     }
     #[inline]
     pub fn write_blocks(&mut self, b: &[Block], start: u32) -> Result<(), CardError> {
-        if matches!(self.ver, CardType::None) {
-            self.init()?;
+        if let CardType::None = self.ver {
+            let _ = self.init()?;
         }
         self.cs.low();
-        let r = self._write_blocks(b, self.index(start)?);
+        let r = self._write_blocks(b, self.index(start));
         self.cs.high();
         r
     }
     #[inline]
     pub fn read_blocks(&mut self, b: &mut [Block], start: u32) -> Result<(), CardError> {
-        if matches!(self.ver, CardType::None) {
-            self.init()?;
+        if let CardType::None = self.ver {
+            let _ = self.init()?;
         }
         self.cs.low();
-        let r = self._read_blocks(b, self.index(start)?);
+        let r = self._read_blocks(b, self.index(start));
         self.cs.high();
         r
     }
 
-    #[inline(always)]
+    #[inline]
     fn read_byte(&mut self) -> u8 {
         self.spi.transfer_single(0xFFu8)
     }
-    #[inline(always)]
-    fn counter(&mut self) -> Counter {
-        Counter {
-            t:   unsafe { NonNull::new_unchecked(&mut self.timer) },
-            cur: 0,
-            hit: self.attempts,
+    #[inline]
+    fn index(&self, s: u32) -> u32 {
+        match self.ver {
+            CardType::SDHC => s,
+            CardType::SD1 | CardType::SD2 => s * 0x200,
+            CardType::None => unreachable!(), // Shouldn't be able to happen.
         }
     }
     #[inline]
@@ -256,18 +271,17 @@ impl Card<'_> {
         r
     }
     fn _init(&mut self) -> Result<(), CardError> {
-        let (mut c, mut e, mut o) = (self.counter(), 0x40u8, 0xFFu8);
+        let (mut c, mut e, mut o) = (Counter::new(self), 0x40u8, 0xFFu8);
         loop {
             // 0xF9F9F9F9 - Switch to SDR12 mode. Forces fast-boot on all cards
-            // so they startup properly.
+            //              so they startup properly.
             match self.cmd(CMD0, 0xF9F9F9F9) {
                 Err(CardError::Timeout) if e == 0 => return Err(CardError::Timeout),
                 Err(CardError::Timeout) => {
                     for _ in 0..0xFF {
                         self.spi.write_single(0xFFu8);
                     }
-                    // NOTE(sf): Timeout 64 times before giving up.
-                    e = e.saturating_sub(1);
+                    e = e.saturating_sub(1); // Timeout 64 times before giving up.
                     c.reset(); // Reset Counter
                 },
                 Err(e) => return Err(e),
@@ -291,14 +305,14 @@ impl Card<'_> {
         if self.crc && self.cmd(CMD59, 0x1)? != 0x1 {
             return Err(CardError::InvalidOptions);
         }
+        let mut b = [0xFFu8, 0xFFu8, 0xFFu8, 0xFFu8];
         let a = loop {
             if self.cmd(CMD8, 0x1AA)? == 0x5 {
                 self.ver = CardType::SD1;
                 break 0;
             }
-            let mut b = [0xFFu8, 0xFFu8, 0xFFu8, 0xFFu8];
             self.spi.transfer_in_place(&mut b);
-            if b[3] == 0xAA {
+            if b.read_u8(3) == 0xAA {
                 self.ver = CardType::SD2;
                 break 0x40000000;
             }
@@ -314,9 +328,10 @@ impl Card<'_> {
         if self.cmd(CMD58, 0)? != 0 {
             return Err(CardError::InvalidResponse);
         }
-        let mut b = [0xFFu8, 0xFFu8, 0xFFu8, 0xFFu8];
+        // Reset the buffer
+        unsafe { write_bytes(b.as_mut_ptr(), 0xFF, 4) };
         self.spi.transfer_in_place(&mut b);
-        if (b[0] & 0xC0) == 0xC0 {
+        if b.read_u8(0) & 0xC0 == 0xC0 {
             self.ver = CardType::SDHC;
         }
         let _ = self.read_byte();
@@ -324,7 +339,7 @@ impl Card<'_> {
     }
     #[inline]
     fn wait_busy(&mut self) -> Result<(), CardError> {
-        let mut c = self.counter();
+        let mut c = Counter::new(self);
         loop {
             if self.read_byte() == 0xFF {
                 return Ok(());
@@ -332,16 +347,8 @@ impl Card<'_> {
             c.wait()?;
         }
     }
-    #[inline(always)]
-    fn index(&self, s: u32) -> Result<u32, CardError> {
-        match self.ver {
-            CardType::None => Err(CardError::InitFailed),
-            CardType::SDHC => Ok(s),
-            CardType::SD1 | CardType::SD2 => Ok(s * 0x200),
-        }
-    }
     fn read(&mut self, b: &mut [u8]) -> Result<(), CardError> {
-        let mut c = self.counter();
+        let mut c = Counter::new(self);
         loop {
             match self.read_byte() {
                 0xFF => (),
@@ -356,36 +363,37 @@ impl Card<'_> {
         if !self.crc {
             return Ok(());
         }
-        let c = u16::from_be_bytes(v);
-        let a = crc_v16(b);
-        if a != c { Err(CardError::InvalidChecksum) } else { Ok(()) }
+        if u16::from_be_bytes(v) != crc_v16(b) { Err(CardError::InvalidChecksum) } else { Ok(()) }
     }
     fn cmd(&mut self, x: u8, arg: u32) -> Result<u8, CardError> {
         if x != CMD0 && x != CMD12 {
             self.wait_busy()?;
         }
-        let mut b = [
-            0x40u8 | x,
-            (arg >> 24) as u8,
-            (arg >> 16) as u8,
-            (arg >> 8) as u8,
-            arg as u8,
-            0,
-        ];
-        b[5] = crc_v7(&b[0..5]);
+        let mut b = unsafe {
+            [
+                0x40 | x,
+                (arg.unchecked_shr(24)) as u8,
+                (arg.unchecked_shr(16)) as u8,
+                (arg.unchecked_shr(8)) as u8,
+                arg as u8,
+                0,
+            ]
+        };
+        b.write_u8(5, crc_v7(b.read_slice(0, 5)));
         self.spi.write(&b);
         if x == CMD12 {
             let _ = self.read_byte();
         }
-        let mut c = self.counter();
+        let mut c = Counter::new(self);
         loop {
             let v = self.read_byte();
-            if (v & 0x80) == 0 {
+            if v & 0x80 == 0 {
                 return Ok(v);
             }
             c.wait()?;
         }
     }
+    #[inline]
     fn write(&mut self, t: u8, b: &[u8]) -> Result<(), CardError> {
         self.spi.write_single(t);
         self.spi.write(b);
@@ -393,7 +401,7 @@ impl Card<'_> {
         self.spi.write(&c);
         if self.read_byte() & 0x1F != 0x5 { Err(CardError::Write) } else { Ok(()) }
     }
-    #[inline(always)]
+    #[inline]
     fn cmd_app(&mut self, x: u8, arg: u32) -> Result<u8, CardError> {
         self.cmd(CMD55, 0)?;
         self.cmd(x, arg)
@@ -410,14 +418,14 @@ impl Card<'_> {
         }
         Ok(())
     }
-    #[inline(always)]
+    #[inline]
     fn _read_block(&mut self, b: &mut Block, i: u32) -> Result<(), CardError> {
         self.cmd(CMD17, i)?;
         self.read(b)
     }
     fn _write_blocks(&mut self, b: &[Block], i: u32) -> Result<(), CardError> {
         if b.len() == 1 {
-            return self._write_block(&b[0], i);
+            return self._write_block(unsafe { b.get_unchecked(0) }, i);
         }
         self.cmd_app(CMDA23, b.len() as u32)?;
         self.wait_busy()?;
@@ -432,7 +440,7 @@ impl Card<'_> {
     }
     fn _read_blocks(&mut self, b: &mut [Block], i: u32) -> Result<(), CardError> {
         if b.len() == 1 {
-            return self._read_block(&mut b[0], i);
+            return self._read_block(unsafe { b.get_unchecked_mut(0) }, i);
         }
         self.cmd(CMD18, i)?;
         for v in b.iter_mut() {
@@ -446,43 +454,37 @@ impl Card<'_> {
 impl Deref for CardInfo {
     type Target = [u8];
 
-    #[inline(always)]
+    #[inline]
     fn deref(&self) -> &[u8] {
         &self.buf
     }
 }
-impl DerefMut for CardInfo {
-    #[inline(always)]
-    fn deref_mut(&mut self) -> &mut [u8] {
-        &mut self.buf
-    }
-}
 
 impl BlockDevice for Card<'_> {
-    #[inline(always)]
-    fn blocks(&mut self) -> Result<u32, DeviceError> {
+    #[inline]
+    fn blocks(&mut self) -> DevResult<u32> {
         Ok(self.blocks()?)
     }
-    #[inline(always)]
-    fn write(&mut self, b: &[Block], start: u32) -> Result<(), DeviceError> {
+    #[inline]
+    fn write(&mut self, b: &[Block], start: u32) -> DevResult<()> {
         Ok(self.write_blocks(b, start)?)
     }
-    #[inline(always)]
-    fn read(&mut self, b: &mut [Block], start: u32) -> Result<(), DeviceError> {
+    #[inline]
+    fn read(&mut self, b: &mut [Block], start: u32) -> DevResult<()> {
         Ok(self.read_blocks(b, start)?)
     }
-    #[inline(always)]
-    fn write_single(&mut self, b: &Block, start: u32) -> Result<(), DeviceError> {
+    #[inline]
+    fn write_single(&mut self, b: &Block, start: u32) -> DevResult<()> {
         Ok(self.write_block(b, start)?)
     }
-    #[inline(always)]
-    fn read_single(&mut self, b: &mut Block, start: u32) -> Result<(), DeviceError> {
+    #[inline]
+    fn read_single(&mut self, b: &mut Block, start: u32) -> DevResult<()> {
         Ok(self.read_block(b, start)?)
     }
 }
 
 impl From<CardError> for DeviceError {
-    #[inline(always)]
+    #[inline]
     fn from(v: CardError) -> DeviceError {
         match v {
             CardError::Read => DeviceError::Read,
@@ -495,8 +497,8 @@ impl From<CardError> for DeviceError {
     }
 }
 
-#[cfg(feature = "debug")]
 impl Debug for CardError {
+    #[cfg(feature = "debug")]
     #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
@@ -510,10 +512,8 @@ impl Debug for CardError {
             CardError::InvalidChecksum => f.write_str("InvalidChecksum"),
         }
     }
-}
-#[cfg(not(feature = "debug"))]
-impl Debug for CardError {
-    #[inline(always)]
+    #[cfg(not(feature = "debug"))]
+    #[inline]
     fn fmt(&self, _f: &mut Formatter<'_>) -> fmt::Result {
         Ok(())
     }
@@ -521,26 +521,28 @@ impl Debug for CardError {
 
 fn crc_v7(b: &[u8]) -> u8 {
     let mut r = 0u8;
-    for i in b {
+    for i in b.iter() {
         let mut v = *i;
         for _ in 0..8 {
-            r <<= 1;
+            r = unsafe { r.unchecked_shl(1) };
             if ((v & 0x80) ^ (r & 0x80)) != 0 {
                 r ^= 0x9;
             }
-            v <<= 1;
+            v = unsafe { v.unchecked_shl(1) };
         }
     }
-    (r << 1) | 1
+    unsafe { r.unchecked_shl(1) | 1 }
 }
 fn crc_v16(b: &[u8]) -> u16 {
     let mut r = 0u16;
-    for i in b {
-        r = ((r >> 8) & 0xFF) | (r << 8);
-        r ^= *i as u16;
-        r ^= (r & 0xFF) >> 4;
-        r ^= r << 12;
-        r ^= (r & 0xFF) << 5;
+    for i in b.iter() {
+        unsafe {
+            r = (r.unchecked_shr(8) & 0xFF) | r.unchecked_shl(8);
+            r ^= *i as u16;
+            r ^= (r & 0xFF).unchecked_shr(4);
+            r ^= r.unchecked_shl(12);
+            r ^= (r & 0xFF).unchecked_shl(5);
+        }
     }
     r
 }

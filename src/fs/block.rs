@@ -21,13 +21,17 @@
 
 extern crate core;
 
+use core::cmp::Ord;
 use core::default::Default;
+use core::hint::unreachable_unchecked;
+use core::mem::{MaybeUninit, transmute};
 use core::ops::{Deref, DerefMut};
 use core::option::Option::{self, None, Some};
-use core::result::Result::{self, Ok};
-use core::{cmp, unreachable};
+use core::ptr::write_bytes;
+use core::result::Result::Ok;
 
-use crate::fs::{BlockDevice, DeviceError, Storage};
+use crate::fs::{BlockDevice, DevResult, Storage};
+use crate::{Slice, SliceMut};
 
 pub struct BlockBuffer {
     buf:    [Block; 4],
@@ -35,40 +39,40 @@ pub struct BlockBuffer {
 }
 pub struct BlockEntryIter {
     buf:   BlockBuffer,
-    prev:  Option<u32>,
     last:  u32,
+    prev:  Option<u32>,
     count: u8,
 }
 #[repr(transparent)]
 pub struct BlockCache(Option<u32>);
 #[repr(transparent)]
-pub struct Block([u8; Block::SIZE]);
+pub struct Block([MaybeUninit<u8>; Block::SIZE]);
 
 impl Block {
     pub const SIZE: usize = 0x200;
 
-    #[inline(always)]
+    #[inline]
     pub const fn new() -> Block {
-        Block([0u8; Block::SIZE])
+        Block([MaybeUninit::uninit(); Block::SIZE])
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn clear(&mut self) {
-        self.0.fill(0)
+        unsafe { write_bytes(self.0.as_mut_ptr(), 0u8, Block::SIZE) };
     }
 }
 impl BlockCache {
-    #[inline(always)]
-    pub fn new() -> BlockCache {
+    #[inline]
+    pub const fn new() -> BlockCache {
         BlockCache(None)
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn clear(&mut self) {
-        self.0.take();
+        let _ = self.0.take();
     }
     #[inline]
-    pub fn read_single(&mut self, dev: &Storage<impl BlockDevice>, b: &mut Block, pos: u32) -> Result<(), DeviceError> {
+    pub fn read_single<B: BlockDevice>(&mut self, dev: &Storage<B>, b: &mut Block, pos: u32) -> DevResult<()> {
         match self.0.replace(pos) {
             Some(v) if v != pos => dev.read_single(b, pos),
             None => dev.read_single(b, pos),
@@ -84,7 +88,7 @@ impl BlockBuffer {
     pub const SLOT_D: u8 = 0x3u8;
 
     #[inline]
-    pub fn new() -> BlockBuffer {
+    pub const fn new() -> BlockBuffer {
         BlockBuffer {
             buf:    [Block::new(), Block::new(), Block::new(), Block::new()],
             status: 0u8,
@@ -93,7 +97,7 @@ impl BlockBuffer {
 
     #[inline]
     pub fn is_dirty(&self, slot: u8) -> bool {
-        match slot % BlockBuffer::COUNT {
+        match slot {
             BlockBuffer::SLOT_A if self.status & 0x80 != 0 => true,
             BlockBuffer::SLOT_B if self.status & 0x40 != 0 => true,
             BlockBuffer::SLOT_C if self.status & 0x20 != 0 => true,
@@ -103,7 +107,7 @@ impl BlockBuffer {
     }
     #[inline]
     pub fn is_loaded(&self, slot: u8) -> bool {
-        match slot % BlockBuffer::COUNT {
+        match slot {
             BlockBuffer::SLOT_A if self.status & 0x8 != 0 => true,
             BlockBuffer::SLOT_B if self.status & 0x4 != 0 => true,
             BlockBuffer::SLOT_C if self.status & 0x2 != 0 => true,
@@ -112,126 +116,126 @@ impl BlockBuffer {
         }
     }
     #[inline]
-    pub fn buffer(&mut self, slot: u8) -> &mut [u8] {
-        match slot % BlockBuffer::COUNT {
+    pub fn buffer(&mut self, slot: u8) -> &mut Block {
+        match slot.min(BlockBuffer::COUNT - 1) {
             BlockBuffer::SLOT_A => {
                 self.status |= 0x80;
-                &mut self.buf[0]
+                unsafe { self.buf.get_unchecked_mut(0) }
             },
             BlockBuffer::SLOT_B => {
                 self.status |= 0x40;
-                &mut self.buf[1]
+                unsafe { self.buf.get_unchecked_mut(1) }
             },
             BlockBuffer::SLOT_C => {
                 self.status |= 0x20;
-                &mut self.buf[2]
+                unsafe { self.buf.get_unchecked_mut(2) }
             },
             BlockBuffer::SLOT_D => {
                 self.status |= 0x10;
-                &mut self.buf[3]
+                unsafe { self.buf.get_unchecked_mut(3) }
             },
-            _ => unreachable!(),
+            _ => unsafe { unreachable_unchecked() },
         }
     }
-    pub fn flush(&mut self, dev: &Storage<impl BlockDevice>, start: u32) -> Result<(), DeviceError> {
+    pub fn flush<B: BlockDevice>(&mut self, dev: &Storage<B>, start: u32) -> DevResult<()> {
         let s = self.status;
         self.status = s & 0xF;
-        match s {
+        match unsafe { s.unchecked_shr(4) } {
             // Contiguous
             // ABCD
-            v if (v >> 4) == 0xF => return dev.write(&self.buf, start),
+            0xF => return dev.write(&self.buf, start),
             // ABC
-            v if (v >> 4) == 0xE => return dev.write(&self.buf[0..3], start),
+            0xE => return dev.write(unsafe { self.buf.get_unchecked(0..3) }, start),
             // AB
-            v if (v >> 4) == 0xC => return dev.write(&self.buf[0..2], start),
+            0xC => return dev.write(unsafe { self.buf.get_unchecked(0..2) }, start),
             // CD
-            v if (v >> 4) == 0x3 => return dev.write(&self.buf[2..], start + 2),
+            0x3 => return dev.write(unsafe { self.buf.get_unchecked(2..) }, start + 2),
             // BCD
-            v if (v >> 4) == 0x7 => return dev.write(&self.buf[1..], start + 1),
+            0x7 => return dev.write(unsafe { self.buf.get_unchecked(1..) }, start + 1),
             // BC
-            v if (v >> 4) == 0x6 => return dev.write(&self.buf[1..3], start + 1),
+            0x6 => return dev.write(unsafe { self.buf.get_unchecked(1..3) }, start + 1),
             // Singles
             // D
-            v if (v >> 4) == 1 => return dev.write_single(&self.buf[3], start + 3),
+            0x1 => return dev.write_single(unsafe { self.buf.get_unchecked(3) }, start + 3),
             // C
-            v if (v >> 4) == 2 => return dev.write_single(&self.buf[2], start + 2),
+            0x2 => return dev.write_single(unsafe { self.buf.get_unchecked(2) }, start + 2),
             // B
-            v if (v >> 4) == 4 => return dev.write_single(&self.buf[1], start + 1),
+            0x4 => return dev.write_single(unsafe { self.buf.get_unchecked(1) }, start + 1),
             // A
-            v if (v >> 4) == 8 => return dev.write_single(&self.buf[0], start),
+            0x8 => return dev.write_single(unsafe { self.buf.get_unchecked(0) }, start),
             _ => (),
         }
         // A
         if s & 0x80 != 0 {
-            dev.write_single(&self.buf[0], start)?;
+            dev.write_single(unsafe { self.buf.get_unchecked(0) }, start)?;
         }
         // B
         if s & 0x40 != 0 {
-            dev.write_single(&self.buf[1], start + 1)?;
+            dev.write_single(unsafe { self.buf.get_unchecked(1) }, start + 1)?;
         }
         // C
         if s & 0x20 != 0 {
-            dev.write_single(&self.buf[2], start + 2)?;
+            dev.write_single(unsafe { self.buf.get_unchecked(2) }, start + 2)?;
         }
         // D
         if s & 0x10 != 0 {
-            dev.write_single(&self.buf[3], start + 3)?;
+            dev.write_single(unsafe { self.buf.get_unchecked(3) }, start + 3)?;
         }
         Ok(())
     }
     #[inline]
-    pub fn read(&mut self, dev: &Storage<impl BlockDevice>, count: u8, start: u32) -> Result<(), DeviceError> {
-        let n = cmp::min(count, BlockBuffer::COUNT);
-        dev.read(&mut self.buf[0..n as usize], start)?;
+    pub fn read<B: BlockDevice>(&mut self, dev: &Storage<B>, count: u8, start: u32) -> DevResult<()> {
+        let n = count.min(BlockBuffer::COUNT - 1) as usize;
+        dev.read(unsafe { self.buf.get_unchecked_mut(0..n) }, start)?;
         self.status = match n {
             4 => 0xF,
             3 => 0xE,
             2 => 0xC,
             1 => 0x8,
-            _ => unreachable!(),
+            _ => unsafe { unreachable_unchecked() },
         };
         Ok(())
     }
 }
 impl BlockEntryIter {
-    #[inline(always)]
+    #[inline]
     pub fn new(count: u8) -> BlockEntryIter {
         BlockEntryIter {
             count,
             buf: BlockBuffer::new(),
-            prev: None,
             last: 0u32,
+            prev: None,
         }
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn pos(&self) -> u32 {
         self.prev.unwrap_or(0)
     }
-    #[inline(always)]
+    #[inline]
     pub fn is_loaded(&self) -> bool {
         self.prev.is_none()
     }
-    #[inline(always)]
+    #[inline]
     pub fn in_scope(&self, pos: u32) -> bool {
         (pos - self.pos()) < BlockBuffer::COUNT as u32
     }
-    #[inline(always)]
+    #[inline]
     pub fn buffer(&mut self, pos: u32) -> &mut [u8] {
         self.buf.buffer((pos - self.pos()) as u8)
     }
     #[inline]
-    pub fn flush(&mut self, dev: &Storage<impl BlockDevice>) -> Result<(), DeviceError> {
+    pub fn flush<B: BlockDevice>(&mut self, dev: &Storage<B>) -> DevResult<()> {
         if let Some(v) = self.prev.take() {
             self.buf.flush(dev, v)?;
         }
         Ok(())
     }
-    pub fn load(&mut self, dev: &Storage<impl BlockDevice>, pos: u32) -> Result<(), DeviceError> {
+    pub fn load<B: BlockDevice>(&mut self, dev: &Storage<B>, pos: u32) -> DevResult<()> {
         if self.last != 0 && pos < self.last {
             return Ok(());
         }
-        let i = cmp::min(self.count, BlockBuffer::COUNT);
+        let i = self.count % BlockBuffer::COUNT;
         self.buf.read(dev, i, pos)?;
         self.last = self.last.saturating_add(i as u32);
         self.count = self.count.saturating_sub(i);
@@ -239,7 +243,7 @@ impl BlockEntryIter {
         Ok(())
     }
     #[inline]
-    pub fn load_and_flush(&mut self, dev: &Storage<impl BlockDevice>, pos: u32) -> Result<(), DeviceError> {
+    pub fn load_and_flush<B: BlockDevice>(&mut self, dev: &Storage<B>, pos: u32) -> DevResult<()> {
         self.flush(dev)?;
         self.load(dev, pos)
     }
@@ -248,31 +252,62 @@ impl BlockEntryIter {
 impl Deref for Block {
     type Target = [u8];
 
-    #[inline(always)]
+    #[inline]
     fn deref(&self) -> &[u8] {
-        &self.0
+        unsafe { transmute(self.0.as_slice()) }
     }
 }
 impl Default for Block {
     #[inline]
     fn default() -> Block {
-        Block([0u8; 0x200])
+        Block::new()
     }
 }
 impl DerefMut for Block {
-    #[inline(always)]
+    #[inline]
     fn deref_mut(&mut self) -> &mut [u8] {
-        &mut self.0
+        unsafe { transmute(self.0.as_mut_slice()) }
+    }
+}
+
+impl Slice for Block {
+    #[inline]
+    fn as_ptr(&self) -> *const u8 {
+        self.0.as_ptr() as *const u8
+    }
+}
+impl Slice for &Block {
+    #[inline]
+    fn as_ptr(&self) -> *const u8 {
+        self.0.as_ptr() as *const u8
+    }
+}
+impl Slice for &mut Block {
+    #[inline]
+    fn as_ptr(&self) -> *const u8 {
+        self.0.as_ptr() as *const u8
+    }
+}
+
+impl SliceMut for Block {
+    #[inline]
+    fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.0.as_mut_ptr() as *mut u8
+    }
+}
+impl SliceMut for &mut Block {
+    #[inline]
+    fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.0.as_mut_ptr() as *mut u8
     }
 }
 
 impl Default for BlockCache {
-    #[inline(always)]
+    #[inline]
     fn default() -> BlockCache {
         BlockCache(None)
     }
 }
-
 impl Default for BlockBuffer {
     #[inline]
     fn default() -> BlockBuffer {

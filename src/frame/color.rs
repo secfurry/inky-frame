@@ -24,14 +24,13 @@ extern crate core;
 use core::clone::Clone;
 use core::cmp::{Eq, PartialEq};
 use core::convert::From;
-use core::f32;
 use core::intrinsics::floorf32;
 use core::marker::Copy;
 
-static PATTERN: [u8; 0x10] = [
+static PATTERN: [u8; 16] = [
     0x0, 0x8, 0x2, 0xA, 0xC, 0x4, 0xE, 0x6, 0x3, 0xB, 0x1, 0x9, 0xF, 0x7, 0xD, 0x5,
 ];
-static MAP: [[u8; 16]; 0x200] = [
+static MAP: [[u8; 16]; 512] = [
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     [3, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     [3, 3, 3, 3, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -561,25 +560,27 @@ pub enum Color {
 pub struct RGB(u8, u8, u8);
 
 impl RGB {
-    #[inline(always)]
+    #[inline]
     pub const fn empty() -> RGB {
         RGB(0u8, 0u8, 0u8)
     }
-    #[inline(always)]
+    #[inline]
     pub const fn raw(c: u32) -> RGB {
-        RGB(
-            ((c >> 16) & 0xFF) as u8,
-            ((c >> 8) & 0xFF) as u8,
-            (c & 0xFF) as u8,
-        )
+        unsafe {
+            RGB(
+                ((c.unchecked_shr(16)) & 0xFF) as u8,
+                ((c.unchecked_shr(8)) & 0xFF) as u8,
+                (c & 0xFF) as u8,
+            )
+        }
     }
-    #[inline(always)]
+    #[inline]
     pub const fn rgb(r: u8, b: u8, g: u8) -> RGB {
         RGB(r, g, b)
     }
 
     pub fn hsv(h: f32, s: f32, v: f32) -> RGB {
-        let i = unsafe { floorf32(h * 6.0) };
+        let i = floorf32(h * 6.0); // NOTE(sf): The other 'floor' function is in 'std'
         let (f, y) = (h * 6.0 - i, v * 255.0);
         let (p, q, t) = (
             (y * (1.0 - s)) as u8,
@@ -597,52 +598,52 @@ impl RGB {
         }
     }
 
-    #[inline(always)]
-    pub fn red(&self) -> u8 {
+    #[inline]
+    pub const fn red(&self) -> u8 {
         self.0
     }
-    #[inline(always)]
-    pub fn blue(&self) -> u8 {
+    #[inline]
+    pub const fn blue(&self) -> u8 {
         self.2
     }
-    #[inline(always)]
-    pub fn green(&self) -> u8 {
+    #[inline]
+    pub const fn green(&self) -> u8 {
         self.1
     }
-    #[inline(always)]
-    pub fn uint(&self) -> u32 {
-        ((self.0 as u32) << 16) | ((self.1 as u32) << 8) | self.2 as u32
+    #[inline]
+    pub const fn uint(&self) -> u32 {
+        unsafe { (self.0 as u32).unchecked_shl(16) | (self.1 as u32).unchecked_shl(8) | self.2 as u32 }
     }
 }
 
 impl Eq for RGB {}
 impl Copy for RGB {}
 impl Clone for RGB {
-    #[inline(always)]
+    #[inline]
     fn clone(&self) -> RGB {
         RGB(self.0, self.1, self.2)
     }
 }
 impl PartialEq for RGB {
-    #[inline(always)]
+    #[inline]
     fn eq(&self, other: &RGB) -> bool {
         self.0 == other.0 && self.1 == other.1 && self.2 == other.2
     }
 }
 impl From<u32> for RGB {
-    #[inline(always)]
+    #[inline]
     fn from(v: u32) -> RGB {
         RGB::raw(v)
     }
 }
 impl From<i32> for RGB {
-    #[inline(always)]
+    #[inline]
     fn from(v: i32) -> RGB {
         RGB::raw(v as u32)
     }
 }
 impl From<(u8, u8, u8)> for RGB {
-    #[inline(always)]
+    #[inline]
     fn from(v: (u8, u8, u8)) -> RGB {
         RGB(v.0, v.1, v.2)
     }
@@ -650,7 +651,9 @@ impl From<(u8, u8, u8)> for RGB {
 
 #[inline]
 pub(super) fn dither(x: u16, y: u16, c: u32) -> u8 {
-    let k = (((((c >> 16) & 0xFF) & 0xE0) << 1) | ((((c >> 8) & 0xFF) & 0xE0) >> 2) | (((c & 0xFF) & 0xE0) >> 5)) as usize;
-    let i = ((x & 0x3) | ((y & 0x3) << 2)) as usize;
-    MAP[k][PATTERN[i] as usize]
+    unsafe {
+        let k = (((c.unchecked_shr(16) & 0xE0).unchecked_shl(1)) | ((c.unchecked_shr(8) & 0xE0).unchecked_shr(2)) | ((c & 0xE0).unchecked_shr(5))) as usize;
+        let i = ((x & 0x3) | (y & 0x3).unchecked_shl(2)) as usize;
+        *MAP.get_unchecked(k).get_unchecked(*PATTERN.get_unchecked(i) as usize)
+    }
 }

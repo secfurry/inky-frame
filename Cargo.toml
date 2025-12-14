@@ -5,7 +5,7 @@ authors             = [ "secfurry" ]
 edition             = "2024"
 license             = "MIT"
 publish             = true
-version             = "0.4.0"
+version             = "0.5.0"
 keywords            = [ "picow", "embedded", "inkyframe", "pinorami", "sdcard" ]
 categories          = [ "no-std", "embedded", "api-bindings", "multimedia::images" ]
 repository          = "https://github.com/secfurry/inky-frame"
@@ -25,7 +25,7 @@ crate-type          = [ "lib" ]
 ## Local Development Only
 # rpsp                = { path = "../rpsp", default-features = false, features = [] }
 #
-rpsp                = { version = "0.2.0", default-features = false, features = [] }
+rpsp                = { version = "0.3.0", default-features = false, features = [] }
 
 [features]
 default             = [ "rpsp/pico" ]

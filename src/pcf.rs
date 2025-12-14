@@ -22,8 +22,8 @@
 extern crate core;
 extern crate rpsp;
 
-use core::cmp;
-use core::convert::Into;
+use core::cmp::Ord;
+use core::convert::{From, Into};
 use core::marker::Send;
 use core::option::Option::{self, None, Some};
 use core::result::Result::{self, Err, Ok};
@@ -32,7 +32,9 @@ use rpsp::clock::{AlarmConfig, RtcError, TimeSource};
 use rpsp::i2c::mode::Controller;
 use rpsp::i2c::{I2c, I2cAddress, I2cBus};
 use rpsp::int::Acknowledge;
-use rpsp::time::Time;
+use rpsp::time::{Month, Time, Weekday};
+
+use crate::Slice;
 
 const CMD_SAVED: u8 = 0x03u8;
 const CMD_CTRL_1: u8 = 0x00u8;
@@ -68,48 +70,47 @@ pub struct PcfRtc<'a> {
 }
 
 impl<'a> PcfRtc<'a> {
-    #[inline(always)]
+    #[inline]
     pub fn new(i2c: impl Into<I2cBus<'a, Controller>>) -> PcfRtc<'a> {
         PcfRtc { i2c: i2c.into() }
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn i2c_bus(&self) -> &I2c<Controller> {
         &self.i2c
     }
     #[inline]
     pub fn reset(&mut self) -> Result<(), RtcError> {
-        self.i2c.write(ADDR, &[CMD_CTRL_1, 0x58u8])?;
+        self.i2c.write(ADDR, &[CMD_CTRL_1, 0x58])?;
         loop {
-            self.i2c.write(ADDR, &[CMD_STATUS, 0u8])?;
+            self.i2c.write(ADDR, &[CMD_STATUS, 0])?;
             if self.is_stable()? {
                 break;
             }
         }
         Ok(())
     }
-    #[inline(always)]
+    #[inline]
     pub fn now(&mut self) -> Result<Time, RtcError> {
         self.now_inner()
     }
-    #[inline(always)]
+    #[inline]
     pub fn get_byte(&mut self) -> Result<u8, RtcError> {
         self.read_reg(CMD_SAVED)
     }
-    #[inline(always)]
+    #[inline]
     pub fn is_24hr(&mut self) -> Result<bool, RtcError> {
         Ok(self.read_reg(CMD_CTRL_1)? & 0x2 == 0)
     }
-    #[inline(always)]
+    #[inline]
     pub fn is_stable(&mut self) -> Result<bool, RtcError> {
         Ok(self.read_reg(CMD_STATUS)? & 0x80 == 0)
     }
     #[inline]
     pub fn alarm_disable(&mut self) -> Result<(), RtcError> {
-        // NOTE(sf): Set the register values to disable instead of just clearing
-        //           them, as bit 7 (0x80) as zero means it's enabled.
-        self.i2c
-            .write(ADDR, &[CMD_ALARM2, 0x80u8, 0x80u8, 0x80u8, 0x80u8, 0x80u8])?;
+        // Set the register values to disable instead of just clearing them, as bit 7
+        // (0x80) as zero means it's enabled.
+        self.i2c.write(ADDR, &[CMD_ALARM2, 0x80, 0x80, 0x80, 0x80, 0x80])?;
         Ok(())
     }
     #[inline]
@@ -125,15 +126,15 @@ impl<'a> PcfRtc<'a> {
         self.i2c.write(ADDR, &[CMD_TIMER_MODE, v & 0xF8])?;
         Ok(())
     }
-    #[inline(always)]
+    #[inline]
     pub fn alarm_state(&mut self) -> Result<bool, RtcError> {
         Ok(self.read_reg(CMD_CTRL_2)? & 0x40 != 0)
     }
-    #[inline(always)]
+    #[inline]
     pub fn timer_state(&mut self) -> Result<bool, RtcError> {
         Ok(self.read_reg(CMD_CTRL_2)? & 0x8 != 0)
     }
-    #[inline(always)]
+    #[inline]
     pub fn set_byte(&mut self, v: u8) -> Result<(), RtcError> {
         self.i2c.write(ADDR, &[CMD_SAVED, v])?;
         Ok(())
@@ -143,8 +144,7 @@ impl<'a> PcfRtc<'a> {
             return Err(RtcError::InvalidTime);
         }
         let r = self.read_reg(CMD_CTRL_1)?;
-        // NOTE(sf): Reset the 12_24 register to 0, to avoid any 12/24 hours
-        //           confusion.
+        // Reset the 12_24 register to 0, to avoid any 12/24 hours confusion.
         self.i2c.write(ADDR, &[CMD_CTRL_1, r & 0xFD])?;
         self.i2c.write(ADDR, &[
             CMD_STATUS,
@@ -176,7 +176,7 @@ impl<'a> PcfRtc<'a> {
         self.i2c.write(ADDR, &[CMD_CTRL_2, v & 0xF7])?;
         Ok(v & 0x8 != 0)
     }
-    #[inline(always)]
+    #[inline]
     pub fn set_timer_ms(&mut self, ms: u32) -> Result<(), RtcError> {
         let (t, s) = ms_to_ticks(ms).ok_or(RtcError::ValueTooLarge)?;
         self.set_timer(t, s)
@@ -189,16 +189,15 @@ impl<'a> PcfRtc<'a> {
             return Err(RtcError::InvalidTime);
         }
         let r = self.read_reg(CMD_CTRL_1)?;
-        // NOTE(sf): Reset the 12_24 register to 0, to avoid any 12/24 hours
-        //           confusion.
+        // Reset the 12_24 register to 0, to avoid any 12/24 hours confusion.
         self.i2c.write(ADDR, &[CMD_CTRL_1, r & 0xFD])?;
         self.i2c.write(ADDR, &[
             CMD_ALARM2,
-            v.secs.map_or(0x80u8, encode),
-            v.mins.map_or(0x80u8, encode),
-            v.hours.map_or(0x80u8, encode),
-            v.day.map_or(0x80u8, |i| encode(i.get())),
-            v.weekday.map_or(0x80u8, |i| encode(i as u8)),
+            v.secs.map_or(0x80, encode),
+            v.mins.map_or(0x80, encode),
+            v.hours.map_or(0x80, encode),
+            v.day.map_or(0x80, |i| encode(i.get())),
+            v.weekday.map_or(0x80, |i| encode(i as u8)),
         ])?;
         Ok(())
     }
@@ -219,14 +218,12 @@ impl<'a> PcfRtc<'a> {
     #[inline]
     pub fn set_timer(&mut self, ticks: u8, speed: PcfTick) -> Result<(), RtcError> {
         let v = self.read_reg(CMD_TIMER_MODE)?;
-        self.i2c.write(ADDR, &[
-            CMD_TIMER_VALUE,
-            ticks,
-            (v & 0xE7) | (((speed as u8) & 0x3) << 3) | 0x4,
-        ])?;
+        self.i2c.write(ADDR, &[CMD_TIMER_VALUE, ticks, unsafe {
+            (v & 0xE7) | ((speed as u8) & 0x3).unchecked_shl(3) | 0x4
+        }])?;
         Ok(())
     }
-    #[inline(always)]
+    #[inline]
     pub fn set_time_from(&mut self, mut v: impl TimeSource) -> Result<(), RtcError> {
         self.set_time(v.now().map_err(|e| e.into())?)
     }
@@ -246,13 +243,13 @@ impl<'a> PcfRtc<'a> {
         let mut b: [u8; 7] = [0u8; 7];
         self.i2c.write_single_then_read(ADDR, CMD_STATUS, &mut b)?;
         let mut d = Time::new(
-            decode(b[6]) as u16 + 0x7D0,
-            decode(b[5]).into(),
-            decode(b[3]),
-            decode(b[2]),
-            decode(b[1]),
-            decode(b[0] & 0x7F),
-            decode(b[4]).into(),
+            decode(b.read_u8(6)) as u16 + 0x7D0,
+            Month::from(decode(b.read_u8(5))),
+            decode(b.read_u8(3)),
+            decode(b.read_u8(2)),
+            decode(b.read_u8(1)),
+            decode(b.read_u8(0) & 0x7F),
+            Weekday::from(decode(b.read_u8(4))),
         );
         if d.hours >= 24 {
             // Correct 12hr to 24hr skew.
@@ -265,7 +262,8 @@ impl<'a> PcfRtc<'a> {
             // 1. Decode min unit.
             // 2. If Bit 4 is 1, add 10.
             // 3. If Bit 5 is 1, add 12 (it's PM).
-            d.hours = cmp::max(decode(b[2] & 0x7), 9) + if b[2] & 0x10 != 0 { 10 } else { 0 } + if b[2] & 0x20 != 0 { 12 } else { 0 }
+            let h = b.read_u8(2);
+            d.hours = decode(h & 0x7).max(9) + if h & 0x10 != 0 { 10 } else { 0 } + if h & 0x20 != 0 { 12 } else { 0 };
         }
         if !d.is_valid() { Err(RtcError::InvalidTime) } else { Ok(d) }
     }
@@ -279,15 +277,17 @@ impl<'a> PcfRtc<'a> {
 impl TimeSource for PcfRtc<'_> {
     type Error = RtcError;
 
-    #[inline(always)]
+    #[inline]
     fn now(&mut self) -> Result<Time, RtcError> {
         self.now_inner()
     }
 }
 impl Acknowledge for PcfRtc<'_> {
-    #[inline(always)]
+    #[inline]
     fn ack_interrupt(&mut self) -> bool {
-        self.alarm_clear_state().unwrap_or(false) | self.timer_clear_state().unwrap_or(false)
+        self.alarm_clear_state()
+            .or_else(|_| self.timer_clear_state())
+            .unwrap_or(false)
     }
 }
 
@@ -296,19 +296,19 @@ unsafe impl Send for PcfRtc<'_> {}
 #[inline]
 fn encode(v: u8) -> u8 {
     let i = v / 10;
-    (v - (i * 10)) | (i << 4)
+    unsafe { (v - (i * 10)) | i.unchecked_shl(4) }
 }
 #[inline]
 fn decode(v: u8) -> u8 {
-    (v & 0xF) + ((v >> 4) & 0xF).wrapping_mul(10)
+    unsafe { (v & 0xF) + (v.unchecked_shr(4) & 0xF).wrapping_mul(10) }
 }
 #[inline]
 fn ms_to_ticks(v: u32) -> Option<(u8, PcfTick)> {
     match v {
-        0..=62 => Some((cmp::min((v * 1_000) / 244, 0xFF) as u8, PcfTick::Speed4kHz)),
-        0..=3_800 => Some((cmp::min(v / 15, 0xFF) as u8, PcfTick::Speed64Hz)),
-        0..=255_000 => Some((cmp::min(v / 1_000, 0xFF) as u8, PcfTick::Speed1Hz)),
-        0..=15_300_000 => Some((cmp::min((v / 1_000) / 60, 0xFF) as u8, PcfTick::Slow)),
+        0..=62 => Some(((v * 1_000 / 244) as u8, PcfTick::Speed4kHz)),
+        0..=3_800 => Some(((v / 15) as u8, PcfTick::Speed64Hz)),
+        0..=255_000 => Some(((v / 1_000) as u8, PcfTick::Speed1Hz)),
+        0..=15_300_000 => Some((((v / 1_000) / 60) as u8, PcfTick::Slow)),
         _ => None,
     }
 }

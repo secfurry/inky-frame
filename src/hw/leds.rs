@@ -41,16 +41,16 @@ pub struct Leds {
 pub struct LedsPtr(NonNull<Leds>);
 
 impl Leds {
-    #[inline(always)]
+    #[inline]
     pub fn all_on(&self) {
-        self.set_all(true);
-    }
-    #[inline(always)]
-    pub fn all_off(&self) {
-        self.set_all(false);
+        self.all_set(true);
     }
     #[inline]
-    pub fn set_all(&self, en: bool) {
+    pub fn all_off(&self) {
+        self.all_set(false);
+    }
+    #[inline]
+    pub fn all_set(&self, en: bool) {
         self.a.set_on(en);
         self.b.set_on(en);
         self.c.set_on(en);
@@ -84,7 +84,7 @@ impl Leds {
     }
 }
 impl LedsPtr {
-    #[inline(always)]
+    #[inline]
     pub(crate) fn new(i: &mut Leds) -> LedsPtr {
         LedsPtr(unsafe { NonNull::new_unchecked(i) })
     }
@@ -93,13 +93,13 @@ impl LedsPtr {
 impl Deref for LedsPtr {
     type Target = Leds;
 
-    #[inline(always)]
+    #[inline]
     fn deref(&self) -> &Leds {
         unsafe { self.0.as_ref() }
     }
 }
 impl DerefMut for LedsPtr {
-    #[inline(always)]
+    #[inline]
     fn deref_mut(&mut self) -> &mut Leds {
         unsafe { self.0.as_mut() }
     }
