@@ -85,9 +85,12 @@ impl LongName {
         unsafe { from_utf8_unchecked(self.as_bytes()) }
     }
     pub fn lfn_size(&self) -> u8 {
+        if self.is_empty() {
+            return 0;
+        }
         let mut r = self.len();
-        if r <= 13 {
-            return 1;
+        if r < 13 {
+            return 1; // Need NULL so anything UNDER 13
         }
         r += 1; // NULL CHAR
         let c = (r / 0xC) as u8;
@@ -546,8 +549,8 @@ pub(super) fn to_lfn(v: usize) -> usize {
 #[inline]
 fn transform(v: u8) -> u8 {
     match v {
-        0x00..=0x1F | 0x20 | 0x22 | 0x2A | 0x2B | 0x2C | 0x2F | 0x3A | 0x3B | 0x3C | 0x3D | 0x3E | 0x3F | 0x5B | 0x5C | 0x5D | 0x7C => b'+',
-        v if v >= b'a' && v <= b'z' => v - 0x20,
+        0x00..=0x1F | 0x7F..=0xFF | 0x3A..=0x3F | 0x20 | 0x22 | 0x2A | 0x2B | 0x2C | 0x2F | 0x5B | 0x5C | 0x5D | 0x7C => b'_',
+        v @ 0x61..=0x7A => v - 0x20, // a - z
         v => v,
     }
 }

@@ -557,7 +557,7 @@ impl<'a, B: BlockDevice> Volume<'a, B> {
     fn create(&self, tmp: &mut Block, name: &[u8], attrs: u8, parent: Cluster, alloc: bool) -> DevResult<DirEntry> {
         let mut n = Cache::lfn();
         let _ = n.fill(name)?;
-        let s = n.lfn_size() + 1;
+        let s = n.lfn_size();
         // Look for empty or free'd spaces
         let r = self.find(tmp, s, parent, |_, b| matches!(b.read_u8(0), 0 | 0xE5))?;
         let (mut e, mut t) = (DirEntry::new(attrs, s - 1), 0u8);
