@@ -35,6 +35,6 @@ static_large        = []
 
 [package.metadata.docs.rs]
 target              = [ "thumbv6m-none-eabi" ]
-features            = [ "debug", "static", "static_large", "rpsp/cyw", "rpsp/debug", "rpsp/pico" ]
+features            = [ "debug", "static", "rpsp/cyw", "rpsp/debug", "rpsp/pico" ]
 default-target      = "thumbv6m-none-eabi"
 no-default-features = true
