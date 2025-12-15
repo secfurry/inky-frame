@@ -197,17 +197,17 @@ impl<'b, 'a: 'b, B: BlockDevice> DirectoryIndex<'a, B> {
         }
         (self.entry, self.block) = (0, self.block + 1);
         if self.block < self.blocks {
-            self.cache.read_single(self.vol.dev, &mut self.buf, self.block)?;
+            let _ = self.cache.read_single(self.vol.dev, &mut self.buf, self.block)?;
             return Ok(false);
         }
         self.cluster = match self.vol.next(&mut self.buf, &mut self.cache, self.cluster)? {
-            None => return Ok(true),
             Some(v) => v,
+            None => return Ok(true),
         };
         let i = self.vol.block_pos_at(self.cluster);
         (self.block, self.blocks) = (i, i + self.vol.block.blocks());
         // Read new Block data
-        self.cache.read_single(self.vol.dev, &mut self.buf, self.block)?;
+        let _ = self.cache.read_single(self.vol.dev, &mut self.buf, self.block)?;
         Ok(false)
     }
     fn next(&'b mut self, r: bool) -> DevResult<Option<&'b mut DirEntryFull>> {
