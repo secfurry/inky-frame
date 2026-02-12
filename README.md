@@ -1,6 +1,6 @@
 # Inky-Frame
 
-Drivers and Utilities for Pinorami InkyFrame Devices
+Drivers and Utilities for Pimoroni InkyFrame Devices
 
 Rust library with helpers and API functions to design programs for InkyFrame
 devices or take advantage of any of the supplied embedded device utilities.
