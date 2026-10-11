@@ -319,7 +319,7 @@ impl<'a, const B: usize, const W: u16, const H: u16, M: InkyMemory<B>> Inky<'a, 
             InkyRotation::Rotate180 => (W - 1 - x, H - 1 - y),
             InkyRotation::Rotate270 => (y, H - 1 - x),
         };
-        (q as usize / 2 + (W as usize / 2) * w as usize, q & 0x1 != 0)
+        (q as usize / 2 + (W as usize / 2) * w as usize, q & 0x1 == 0)
     }
 }
 
